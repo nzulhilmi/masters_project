@@ -685,12 +685,16 @@ void inverseKinematicsSequential() {
  */
 int readInput() {
 	static const char filename[] = "/home/nik/work/cuda/modelInput1.txt";
+	static const char filename_lab[] = "/home/students/nzn448/work/cuda/modelInput1.txt";
 
 	FILE *file = fopen(filename, "r");
 
 	if(!file) {
-		fprintf(stderr, "Error: failed to open file\n");
-		return EXIT_FAILURE;
+		file = fopen(filename_lab, "r");
+		if(!file) {
+			fprintf(stderr, "Error: failed to open file\n");
+			return EXIT_FAILURE;
+		}
 	}
 
 	char line[128]; // To store input lines
