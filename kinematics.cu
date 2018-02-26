@@ -139,25 +139,25 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
 	__shared__ float Ti1[MAX_BODIES * 16]; // 4 x 4 = 16
 
 	// To initialise all variables to zero
-	if(x >= 300 && x < 316) { // size 16
-		T_cuda[x - 300] = 0;
+	if(x >= 200 && x < 216) { // size 16
+		T_cuda[x - 200] = 0;
 	}
 	/*
 	if(x >= 316 && x < 332) { // size 16
 		res[x - 316] = 0;
 	}
 	*/
-	if(x >= 348 && x < 364) { // size 16
-		Ti1[x - 348] = 0;
+	if(x >= 248 && x < 264) { // size 16
+		Ti1[x - 248] = 0;
 	}
-	if(x >= 364 && x < 367) { // size 3
-		pi1[x - 364] = 0;
+	if(x >= 264 && x < 267) { // size 3
+		pi1[x - 264] = 0;
 	}
-	if(x >= 367 && x < 370) { // size 3
-		zi1[x - 367] = 0;
+	if(x >= 267 && x < 270) { // size 3
+		zi1[x - 267] = 0;
 	}
-	if(x >= 370 && x < 370 + (n * 6)) { // size n x 6
-		J_cuda[x - 370] = 0;
+	if(x >= 270 && x < 270 + (n * 6)) { // size n x 6
+		J_cuda[x - 270] = 0;
 	}
 
 	// Copy variables for joint Type and Q
@@ -176,7 +176,7 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
 	__syncthreads();
 
 	// Assign T diagonal
-	if(x == 511) {
+	if(x == 500) {
 		T_cuda[0] = 1;
 		T_cuda[5] = 1;
 		T_cuda[10] = 1;
@@ -184,7 +184,7 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
 	}
 
 	// Assign Ti1 diagonal
-	if(x == 510) {
+	if(x == 501) {
 		Ti1[0] = 1;
 		Ti1[5] = 1;
 		Ti1[10] = 1;
@@ -192,7 +192,7 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
 	}
 
 	// Assign last element of zi1 to 1
-	if(x == 509) {
+	if(x == 502) {
 		zi1[2] = 1;
 	}
 
@@ -521,6 +521,8 @@ void forwardKinematicsSequential() {
 __global__ void
 inverseKinematics() {
 	int x = blockIdx.x * blockDim.x + threadIdx.x;
+
+
 }
 
 /**
@@ -853,7 +855,7 @@ int main() {
 		return EXIT_FAILURE;
 	}
 
-	generateRandomVariables(4);
+	generateRandomVariables(5);
 
 	printVariables();
 
@@ -970,7 +972,7 @@ int main() {
 	cudaEventCreate(&stop);
 	cudaEventRecord(start, 0);
 
-	forwardKinematics<<<1, 1023>>>(nb, device_jType, device_q, device_dh_params,
+	forwardKinematics<<<1, 512>>>(nb, device_jType, device_q, device_dh_params,
 			device_T, device_J, device_test);
 	cudaDeviceSynchronize();
 
@@ -1085,7 +1087,7 @@ int main() {
 	cudaEventDestroy(start);
 	cudaEventDestroy(stop);
 
-	//inverseKinematicsSequential();
+	inverseKinematicsSequential();
 
 	printf("\nSequential algorithm time taken: %.4f", sequential_time);
 
