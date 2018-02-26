@@ -70,7 +70,7 @@
 // Constant factor for inverse kinematics
 #define GAIN 0.1
 #define TOLERANCE 0.001
-#define MAX_ITERATION 1000
+#define MAX_ITERATION 10
 
 // Global variables to store model details
 int nb = 0; // Number of bodies
@@ -78,15 +78,15 @@ int jType[MAX_BODIES]; // Joint types
 float q[MAX_BODIES]; // Vector of joint variables
 float DH_params[MAX_BODIES][4]; // Denavit-Hartenberg Parameters
 
-float T_global[4][4];
-float J_global[6][MAX_BODIES];
+float T[4][4];
+float J[6][MAX_BODIES];
 
 float pdes[2];
 float pdes_[3];
 float odes;
 float odes_[3];
 int method;
-int dim;
+int dim; // size of pdes
 
 /*
 __global__ void
@@ -127,8 +127,8 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
 
 	// Variables for homogeneous matrix calculations
 	__shared__ int jType_cuda[MAX_BODIES];
-	__shared__ float q_cuda[MAX_BODIES], dh_params_cuda[MAX_BODIES * 4], J[6 * MAX_BODIES];
-	__shared__ float T[16], Ti[MAX_BODIES * 16], res[16]; // 4 x 4 = 16
+	__shared__ float q_cuda[MAX_BODIES], dh_params_cuda[MAX_BODIES * 4], J_cuda[6 * MAX_BODIES];
+	__shared__ float T_cuda[16], Ti[MAX_BODIES * 16], res[16]; // 4 x 4 = 16
 	__shared__ float a_i[MAX_BODIES], alpha_i[MAX_BODIES], d_i[MAX_BODIES], theta_i[MAX_BODIES];
 	__shared__ float ct[MAX_BODIES], st[MAX_BODIES], ca[MAX_BODIES], sa[MAX_BODIES];
 
@@ -139,7 +139,7 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
 
 	// To initialise all variables to zero
 	if(x >= 300 && x < 316) { // size 16
-		T[x - 300] = 0;
+		T_cuda[x - 300] = 0;
 	}
 	/*
 	if(x >= 316 && x < 332) { // size 16
@@ -159,7 +159,7 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
 		zi1[x - 367] = 0;
 	}
 	if(x >= 370 && x < 370 + (n * 6)) { // size n x 6
-		J[x] = 0;
+		J_cuda[x] = 0;
 	}
 
 	// Copy variables for joint Type and Q
@@ -179,10 +179,10 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
 
 	// Assign T diagonal
 	if(x == 511) {
-		T[0] = 1;
-		T[5] = 1;
-		T[10] = 1;
-		T[15] = 1;
+		T_cuda[0] = 1;
+		T_cuda[5] = 1;
+		T_cuda[10] = 1;
+		T_cuda[15] = 1;
 	}
 
 	// Assign Ti1 diagonal
@@ -264,11 +264,11 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
 			res[x] = 0;
 
 			for(int a = 0; a < 4; a++) {
-				res[x] += T[(x / 4) * 4 + a] * Ti[i * 16 + x % 4 + a * 4];
+				res[x] += T_cuda[(x / 4) * 4 + a] * Ti[i * 16 + x % 4 + a * 4];
 			}
 
 			// Copy matrix res to T
-			T[x] = res[x];
+			T_cuda[x] = res[x];
 		}
 
 		__syncthreads();
@@ -279,7 +279,7 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
 
 	// Initialise pe
 	if(x >= 300 && x < 303) {
-		pe[x - 300] = T[(x - 300) * 4 + 3];
+		pe[x - 300] = T_cuda[(x - 300) * 4 + 3];
 	}
 
 	// Matrix multiplication Ti1 = Ti1 * Ti
@@ -299,13 +299,13 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
 	}
 
 	// Assign zi1
-	if(x >= n && x < 3 * n) {
-		zi1[x] = Ti1[(x / n) * 16 + (x % n) * 4 + 2];
+	if(x >= 3 && x < 3 * n) {
+		zi1[x] = Ti1[(x / 3) * 16 + (x % 3) * 4 + 2];
 	}
 
 	// Assign pi1
-	if(x >= n * 3 && x < 5 * n) {
-		pi1[x - 2 * n] = Ti1[((x - 2 * n) / n) * 16 + (x % n) * 4 + 3];
+	if(x >= 3 + 3 * n && x < 6 * n) {
+		pi1[x - 3 * n] = Ti1[((x - 3 * n) / 3) * 16 + (x % 3) * 4 + 3];
 	}
 
 	__syncthreads();
@@ -337,19 +337,19 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
 
 	// Assign J
 	if(x < 3 * n) { // top 3 rows
-		J[x] = Jp[(x % n) * n + (x / 3)];
+		J_cuda[x] = Jp[(x % n) * 3 + (x / n)];
 	}
 	if(x >= 3 * n && x < 6 * n) { // bottom 3 rows
-		J[x] = Jw[(x % n) * n + (x / 3) - n];
+		J_cuda[x] = Jw[(x % n) * 3 + ((x - 3* n) / n)];
 	}
 
 	// Copy T and J to output
 	__syncthreads();
 	if(x < 16) {
-		t_output[x] = T[x];
+		t_output[x] = T_cuda[x];
 	}
 	if(x < n * 6) {
-		j_output[x] = J[x];
+		j_output[x] = J_cuda[x];
 	}
 }
 
@@ -357,12 +357,13 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
  * Forward Kinematics implemented sequentially using CPU processing power.
  */
 void forwardKinematicsSequential() {
-	float T[4][4] = {{1, 0, 0, 0},
-					 {0, 1, 0, 0},
-					 {0, 0, 1, 0},
-					 {0, 0, 0, 1}};
+	for(int a = 0; a < 4; a++) {
+		for(int b = 0; b < 4; b++) {
+			T[a][b] = 0;
+		}
+	}
+	T[0][0] = 1; T[1][1] = 1; T[2][2] = 1; T[3][3] = 1;
 	float Ti[nb][4][4];
-	float J[6][nb];
 	float res[4][4]; // To be used for matrix calculations
 
 	int i;
@@ -534,12 +535,28 @@ void inverseKinematicsSequential() {
 	// Variables with _ are for spatial robot (where dimension = 3)
 	float R[3][3];
 	float p[2], p_[3];
-	float phi, ori, ori_[3], theta, psi, delta_p[3], delta_p_[6], delta_q[3], delta_q_[6];
-	float Jacobian[3][nb], Jacobian_[6][nb], Jacobian_transpose[nb][3], Jacobian_transpose_[nb][6];
+	float phi, ori, ori_[3], theta, psi, delta_p[3], delta_p_[6], delta_q[nb];
+	float Jacobian[3][nb], Jacobian_[6][nb];
 	float temp[nb][3], temp_[nb][6];
 	float normal;
 	float sum;
-	float Q_output[nb][1001];
+	float Q_output[nb][MAX_ITERATION + 1];
+
+	//for testing:
+	pdes[0] = 0.5567;
+	pdes[1] = 0.5906;
+	pdes_[0] = 0.5567;
+	pdes_[1] = 0.5906;
+	pdes_[2] = 0.3341;
+
+	odes = 3;
+	odes_[0] = 3;
+	odes_[1] = 4;
+	odes_[2] = 5;
+
+	method = 0;
+	dim = 2;
+
 
 	for(int a = 0; a < nb; a++) {
 		Q_output[a][0] = q[a];
@@ -547,18 +564,22 @@ void inverseKinematicsSequential() {
 
 	while(flag == 0) {
 		// Run forward kinematics
+		for(int a = 0; a < nb; a++) {
+			q[a] = Q_output[a][i-1];
+		}
+
 		forwardKinematicsSequential();
 
 		// Copy R
 		for(int a = 0; a < 3; a++) {
 			for(int b = 0; b < 3; b++) {
-				R[a][b] = T_global[a][b];
+				R[a][b] = T[a][b];
 			}
 		}
 
 		if(dim == 2) {
-			p[0] = T_global[0][3];
-			p[1] = T_global[1][3];
+			p[0] = T[0][3];
+			p[1] = T[1][3];
 
 			phi = atan2(R[1][0], R[0][0]);
 			ori = phi;
@@ -575,13 +596,14 @@ void inverseKinematicsSequential() {
 			normal = sqrt(sum);
 		}
 		else {
-			p_[0] = T_global[0][3];
-			p_[1] = T_global[1][3];
-			p_[2] = T_global[2][3];
+			p_[0] = T[0][3];
+			p_[1] = T[1][3];
+			p_[2] = T[2][3];
 
 			phi = atan2(R[1][0], R[0][0]);
-			theta = atan2(-R[2][0], sqrt(pow(R[2][1], 2) + pow(R[2][2], 2)));
+			theta = atan2(-R[2][0], sqrt( pow(R[2][1], 2) + pow(R[2][2], 2)) );
 			psi = atan2(R[2][1], R[2][2]);
+
 			ori_[0] = psi;
 			ori_[1] = theta;
 			ori_[2] = phi;
@@ -607,47 +629,47 @@ void inverseKinematicsSequential() {
 		else {
 			if(dim == 2) {
 				for(int a = 0; a < nb; a++) {
-					Jacobian[0][a] = J_global[0][a];
-					Jacobian[1][a] = J_global[1][a];
-					Jacobian[2][a] = J_global[5][a];
+					Jacobian[0][a] = J[0][a];
+					Jacobian[1][a] = J[1][a];
+					Jacobian[2][a] = J[5][a];
 				}
 
 				// Transpose of J
-				for(int a = 0; a < nb; a++) {
-					for(int b = 0; b < 3; b++) {
-						Jacobian_transpose[b][a] = Jacobian[a][b];
-						temp[b][a] = GAIN * Jacobian_transpose[b][a];
+				for(int a = 0; a < 3; a++) {
+					for(int b = 0; b < nb; b++) {
+						temp[b][a] = GAIN * Jacobian[a][b];
 					}
+
 				}
 
 				if(method == 0) {
 					// delta_q = GAIN * transpose(Jacobian) * delta_p
 					// nx3 x 3 matrix
 					for(int a = 0; a < nb; a++) {
+						delta_q[a] = 0;
+
 						for(int b = 0; b < 3; b++) {
-
-							for(int c = 0; c < 3; c++) {
-
-							}
+							delta_q[a] += temp[a][b] * delta_p[b];
 						}
 					}
 				}
 				else {
 					//delta_q = GAIN * (transpose(Jacobian) / (Jacobian / transpose(Jacobian))) * delta_p
+
 				}
 			}
-			else {
+			else { // dim == 3
+				// Jacobian = J
 				for(int a = 0; a < 6; a++) {
 					for(int b = 0; b < nb; b++) {
-						Jacobian_[a][b] = J_global[a][b];
+						Jacobian_[a][b] = J[a][b];
 					}
 				}
 
 				// Transpose of J
-				for(int a = 0; a < nb; a++) {
-					for(int b = 0; b < 6; b++) {
-						Jacobian_transpose_[b][a] = Jacobian[a][b];
-						temp_[b][a] = GAIN * Jacobian_transpose_[b][a];
+				for(int a = 0; a < 6; a++) {
+					for(int b = 0; b < nb; b++) {
+						temp_[b][a] = GAIN * Jacobian_[a][b];
 					}
 				}
 
@@ -655,11 +677,10 @@ void inverseKinematicsSequential() {
 					// delta_q = GAIN * transpose(Jacobian) * delta_p
 					// nx6 x 6 matrix
 					for(int a = 0; a < nb; a++) {
+						delta_q[a] = 0;
+
 						for(int b = 0; b < 6; b++) {
-
-							for(int c = 0; c < 6; c++) {
-
-							}
+							delta_q[a] += temp_[a][b] * delta_p_[b];
 						}
 					}
 				}
@@ -668,14 +689,25 @@ void inverseKinematicsSequential() {
 				}
 			}
 
+			for(int a = 0; a < nb; a++) {
+				Q_output[a][i] = Q_output[a][i - 1] + delta_q[a];
+			}
 			i++;
-			//Q(:,i) = Q(:, i - 1) + delta_q
-			//Q
 
 			if(i > MAX_ITERATION) {
 				flag = 2;
 			}
 		}
+	}
+
+	// Print q
+	printf("\nInverse Kinematics\n");
+	printf("\nQ:\n");
+	for(int a = 0; a < nb; a++) {
+		for(int b = 0; b < MAX_ITERATION + 1; b++) {
+			printf("%.4f ", Q_output[a][b]);
+		}
+		printf("\n");
 	}
 }
 
@@ -931,7 +963,7 @@ int main() {
 	cudaEventCreate(&stop);
 	cudaEventRecord(start, 0);
 
-	forwardKinematics<<<1, 512>>>(nb, device_jType, device_q, device_dh_params,
+	forwardKinematics<<<1, 1024>>>(nb, device_jType, device_q, device_dh_params,
 			device_T, device_J, device_test);
 	cudaDeviceSynchronize();
 
@@ -1039,6 +1071,8 @@ int main() {
 	cudaEventElapsedTime(&sequential_time, start, stop);
 	cudaEventDestroy(start);
 	cudaEventDestroy(stop);
+
+	//inverseKinematicsSequential();
 
 	printf("\nSequential algorithm time taken: %.4f", sequential_time);
 
