@@ -51,13 +51,14 @@
 #include <iostream>
 #include <string.h>
 #include <math.h>
+#include <time.h>
 // For CUDA runtime routines
 #include <cuda_runtime.h>
 
 #define BLOCK_SIZE 1024
 
-#define MAX_BODIES 30
-#define INPUT_NUM 33
+#define MAX_BODIES 50
+#define INPUT_NUM 53
 
 #define NUMBER_OF_BODIES 0
 #define JOINT_TYPE 1
@@ -145,9 +146,6 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
 	if(x >= 316 && x < 332) { // size 16
 		res[x - 316] = 0;
 	}
-	if(x >= 332 && x < 348) { // size 16
-		res2[x - 332] = 0;
-	}
 	*/
 	if(x >= 348 && x < 364) { // size 16
 		Ti1[x - 348] = 0;
@@ -159,7 +157,7 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
 		zi1[x - 367] = 0;
 	}
 	if(x >= 370 && x < 370 + (n * 6)) { // size n x 6
-		J_cuda[x] = 0;
+		J_cuda[x - 370] = 0;
 	}
 
 	// Copy variables for joint Type and Q
@@ -215,13 +213,13 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
 		a_i[x] = dh_params_cuda[x * 4];
 	}
 	if(x >= n && x < 2 * n) {
-		alpha_i[x % n] = dh_params_cuda[(x - n) * 4 + 1];
+		alpha_i[x % n] = dh_params_cuda[(x % n) * 4 + 1];
 	}
 	if(x >= 2 * n && x < 3 * n) {
-		d_i[x % n] = dh_params_cuda[(x - 2 * n) * 4 + 2];
+		d_i[x % n] = dh_params_cuda[(x % n) * 4 + 2];
 	}
 	if(x >= 3 * n && x < 4 * n) {
-		theta_i[x % n] = dh_params_cuda[(x - 3 * n) * 4 + 3];
+		theta_i[x % n] = dh_params_cuda[(x % n) * 4 + 3];
 	}
 
 	__syncthreads();
@@ -247,7 +245,7 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
 		Ti[x * 16 + 0] = ct[x]; 			Ti[x * 16 + 1] = -st[x] * ca[x];				Ti[x * 16 + 2] = st[x] * sa[x];					Ti[x * 16 + 3] = a_i[x] * ct[x];
 	}
 	if(x >= n && x < 2 * n) {
-		Ti[(x % n) * 16 + 4] = st[x % n];	Ti[(x % n) * 16 + 5] = ct[x % n] * ca[x % n];	Ti[x % n * 16 + 6] = -ct[x % n] * sa[x % n];	Ti[x % n * 16 + 7] = a_i[x % n] * st[x % n];
+		Ti[(x % n) * 16 + 4] = st[x % n];	Ti[(x % n) * 16 + 5] = ct[x % n] * ca[x % n];	Ti[(x % n) * 16 + 6] = -ct[x % n] * sa[x % n];	Ti[(x % n) * 16 + 7] = a_i[x % n] * st[x % n];
 	}
 	if(x >= 2 * n && x < 3 * n) {
 		Ti[(x % n) * 16 + 8] = 0;			Ti[(x % n) * 16 + 9] = sa[x % n];				Ti[(x % n) * 16 + 10] = ca[x % n];				Ti[(x % n) * 16 + 11] = d_i[x % n];
@@ -288,7 +286,7 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
 			res[x] = 0;
 
 			for(int a = 0; a < 4; a++) {
-				res[x] += Ti1[(i - 1) * 16 + (x / 4) * 4 + a] * Ti[(i - 1) * 16 + x % 4 + a * 4];
+				res[x] += Ti1[(i - 1) * 16 + (x / 4) * 4 + a] * Ti[(i - 1) * 16 + (x % 4) + a * 4];
 			}
 
 			// Copy res to Ti1
@@ -340,7 +338,7 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
 		J_cuda[x] = Jp[(x % n) * 3 + (x / n)];
 	}
 	if(x >= 3 * n && x < 6 * n) { // bottom 3 rows
-		J_cuda[x] = Jw[(x % n) * 3 + ((x - 3* n) / n)];
+		J_cuda[x] = Jw[(x % n) * 3 + ((x - 3 * n) / n)];
 	}
 
 	// Copy T and J to output
@@ -716,7 +714,7 @@ void inverseKinematicsSequential() {
  * This functions convert the input into global variables.
  */
 int readInput() {
-	static const char filename[] = "/home/nik/work/cuda/modelInput1.txt";
+	static const char filename[] = "/home/nik/cuda-workspace/Kinematics/src/modelInput1.txt";
 	static const char filename_lab[] = "/home/students/nzn448/work/cuda/modelInput1.txt";
 
 	FILE *file = fopen(filename, "r");
@@ -729,9 +727,9 @@ int readInput() {
 		}
 	}
 
-	char line[128]; // To store input lines
+	char line[256]; // To store input lines
 
-	char strings[INPUT_NUM][128];
+	char strings[INPUT_NUM][256];
 	int count = 0;
 
 	printf("Inputs: \n");
@@ -775,6 +773,40 @@ int readInput() {
 		}
 	}
 
+	fclose(file);
+
+	return 0;
+}
+
+/**
+ * Generate random input variables
+ */
+int generateRandomVariables(int numberOfInputs) {
+	if(numberOfInputs > MAX_BODIES) {
+		fprintf(stderr, "Number of inputs is bigger than allowed\n");
+		return 0;
+	}
+
+	nb = numberOfInputs;
+
+	srand(time(NULL));
+	for(int i = 0; i < numberOfInputs; i++) {
+		jType[i] = 0;
+		q[i] = (float) rand() / (float) RAND_MAX;
+
+		DH_params[i][0] = (float) rand() / (float) RAND_MAX;
+		for(int j = 1; j < 4; j++) {
+			DH_params[i][j] = 0;
+		}
+	}
+
+	return 0;
+}
+
+/**
+ * Print all the global variables
+ */
+void printVariables() {
 	// Print variables/model
 	printf("\n");
 	printf("Number of bodies: %d\n", nb);
@@ -790,23 +822,10 @@ int readInput() {
 	printf("\nDH Params:\n");
 	for(int i = 0; i < nb; i++) {
 		for(int j = 0; j < 4; j++) {
-			printf("%.2f ", DH_params[i][j]);
+			printf("%.4f ", DH_params[i][j]);
 		}
 		printf("\n");
 	}
-
-	fclose(file);
-
-	return 0;
-}
-
-/**
- * Assign to global variables
- */
-int assign(char **p) {
-
-
-	return 0;
 }
 
 /**
@@ -817,22 +836,6 @@ int checkInput() {
 
 
 	return 0;
-}
-
-/**
- * Square matrix multiplication
- */
-void multiplyMatrix(int mat1[][4], int mat2[][4], int res[][4]) {
-	int i, j, k;
-
-	for(i = 0; i < 4; i++) {
-		for(j = 0; j < 4; j++) {
-			res[i][j] = 0;
-			for(k = 0; k < 4; k++) {
-				res[i][j] += mat1[i][k] * mat2[k][j];
-			}
-		}
-	}
 }
 
 int main() {
@@ -849,6 +852,10 @@ int main() {
 		fprintf(stderr, "Failed to run checkInput() function\n");
 		return EXIT_FAILURE;
 	}
+
+	generateRandomVariables(4);
+
+	printVariables();
 
 	// Allocate host variables
 	size_t size_int = nb * sizeof(int);
@@ -963,7 +970,7 @@ int main() {
 	cudaEventCreate(&stop);
 	cudaEventRecord(start, 0);
 
-	forwardKinematics<<<1, 1024>>>(nb, device_jType, device_q, device_dh_params,
+	forwardKinematics<<<1, 1023>>>(nb, device_jType, device_q, device_dh_params,
 			device_T, device_J, device_test);
 	cudaDeviceSynchronize();
 
@@ -1052,6 +1059,12 @@ int main() {
 	err = cudaFree(device_J);
 	if(err != cudaSuccess) {
 		fprintf(stderr, "Failed to free device J (error code %s)\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+	err = cudaFree(device_test);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to free device test (error code %s)\n", cudaGetErrorString(err));
 		exit(EXIT_FAILURE);
 	}
 
