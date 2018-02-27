@@ -89,31 +89,30 @@ float odes_[3];
 int method;
 int dim; // size of pdes
 
-/*
-__global__ void
-testing(int *xx, int *yy, int *zz) {
-	int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+__device__ void
+testing1(float *input) {
 	int x = blockIdx.x * blockDim.x + threadIdx.x;
-	int z = blockIdx.z * blockDim.z + threadIdx.z;
 
-	__shared__ int A[16];
-	__shared__ int B[16];
-
-	if(y < 4) {
-		A[y] = xx[y];
-	}
-	if(z < 4) {
-		B[z] = yy[z];
-	}
-	if(y < 4 && z < 4) {
-		zz[y + 4 * z] = A[y] + B[z];
+	//__shared__ float XY[10];
+	if(x < 10) {
+		input[x] += 10;
 	}
 
-	//printf("%d y\n", y);
-	//printf("%d x\n", x);
-	//printf("%d z\n", z);
 }
-*/
+
+__global__ void
+testing(int *x_input) {
+	int x = blockIdx.x * blockDim.x + threadIdx.x;
+
+	__shared__ float XY[10];
+
+	if(x < 10) {
+		XY[x] = x;
+	}
+	testing1(XY);
+}
+
 
 /**
  * Forward Kinematics implemented in parallel using CUDA GPU threads
@@ -515,12 +514,28 @@ void forwardKinematicsSequential() {
 	}
 }
 
+
+
 /**
  * Forward Kinematics implemented in parallel using CUDA GPU threads
  */
 __global__ void
-inverseKinematics() {
+inverseKinematics(int n, float *q_cuda, float *jType_cuda, float *dh_params_cuda, float *T_cuda,
+		float *J_cuda, float *pdes, float *odes, float *dim) {
 	int x = blockIdx.x * blockDim.x + threadIdx.x;
+
+	int flag = 0;
+	int i = 1;
+
+	float phi, ori, ori_[3], theta, psi, normal, sum;
+
+	//Variables with _ are for spatial robot (where dimenaion = 3)
+	__shared__ float R[9];
+	__shared__ float p[2], p_[3];
+	__shared__ float delta_p[3], delta_p_[6], delta_q[MAX_BODIES];
+	__shared__ float Jacobian[3 * MAX_BODIES], Jacobian_[6 * MAX_BODIES];
+	__shared__ float temp[MAX_BODIES * 3], temp_[MAX_BODIES * 6];
+	__shared__ float Q_output[MAX_BODIES * MAX_ITERATION + 1];
 
 
 }
