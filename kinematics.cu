@@ -57,8 +57,8 @@
 
 #define BLOCK_SIZE 1024
 
-#define MAX_BODIES 50
-#define INPUT_NUM 53
+#define MAX_BODIES 200
+#define INPUT_NUM 203
 
 #define NUMBER_OF_BODIES 0
 #define JOINT_TYPE 1
@@ -870,7 +870,7 @@ int main() {
 		return EXIT_FAILURE;
 	}
 
-	generateRandomVariables(5);
+	generateRandomVariables(100);
 
 	printVariables();
 
@@ -1102,7 +1102,7 @@ int main() {
 	cudaEventDestroy(start);
 	cudaEventDestroy(stop);
 
-	inverseKinematicsSequential();
+	//inverseKinematicsSequential();
 
 	printf("\nSequential algorithm time taken: %.4f", sequential_time);
 
