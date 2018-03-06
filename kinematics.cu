@@ -57,8 +57,8 @@
 
 #define BLOCK_SIZE 1024
 
-#define MAX_BODIES 200
-#define INPUT_NUM 203
+#define MAX_BODIES 60
+#define INPUT_NUM 63
 
 #define NUMBER_OF_BODIES 0
 #define JOINT_TYPE 1
@@ -514,7 +514,148 @@ void forwardKinematicsSequential() {
 	}
 }
 
+/**
+ * Find the determinant of a 3x3 or 6x6 matrix
+ */
+float determinant(float a[6][6], float k) {
+	float s = 1, det = 0, b[6][6];
+	int i, j, m, n, c;
 
+	if(k == 1) {
+		return (a[0][0]);
+	}
+	else {
+		det = 0;
+		for(c = 0; c < k; c++) {
+			m = 0;
+			n = 0;
+
+			for(i = 0; i < k; i++) {
+				for(j = 0; j < k; j++) {
+					b[i][j] = 0;
+
+					if(i != 0 && j != c) {
+						b[m][n] = a[i][j];
+
+						if(n < k - 2) {
+							n++;
+						}
+						else {
+							n = 0;
+							m++;
+						}
+					}
+				}
+			}
+
+			det = det + s * (a[0][c] * determinant(b, k-1));
+			s = -1 * s;
+		}
+	}
+
+	return det;
+}
+
+/**
+ * Find the transpose of a matrix, to find inverse
+ */
+void transpose(float num[6][6], float fac[6][6], float r, float res[6][6]) {
+	int i, j;
+	float b[6][6], d;
+
+	for(i = 0; i < r; i++) {
+		for(j = 0; j < r; j++) {
+			b[i][j] = fac[j][i];
+		}
+	}
+
+	d = determinant(num, r);
+
+	for(i = 0; i < r; i++) {
+		for(j = 0; j < r; j++) {
+			res[i][j] = b[i][j] / d;
+		}
+	}
+}
+
+/**
+ * Find the cofactor of a 3x3 or 6x6 matrix
+ */
+void cofactor(float num[6][6], float f, float res[6][6]) {
+	float b[6][6], fac[6][6];
+	int p, q, m, n, i, j;
+
+	for(q = 0; q < f; q++) {
+		for(p = 0; p < f; p++) {
+			m = 0;
+			n = 0;
+
+			for(i = 0; i < f; i++) {
+				for(j = 0; j < f; j++) {
+					if(i != q && j != p) {
+						b[m][n] = num[i][j];
+
+						if(n < f - 2) {
+							n++;
+						}
+						else {
+							n = 0;
+							m++;
+						}
+					}
+				}
+			}
+
+			fac[q][p] = pow(-1, q + p) * determinant(b, f - 1);
+		}
+	}
+
+	transpose(num, fac, f, res);
+}
+
+/**
+ * Test method for inverse matrix
+ */
+void testMatrix() {
+	printf("\n\nTesting matrix\n");
+
+	float m1[3][3] = {{1.0, 3.0, 3.0},
+					  {1.0, 4.0, 3.0},
+					  {1.0, 3.0, 4.0}};
+
+	float m2[6][6] = {{1.0, 5.0, 6.0, 8.0, 6.0, 5.0},
+					  {3.0, 4.0, 6.0, 8.0, 7.0, 4.0},
+					  {3.0, 4.0, 6.0, 8.0, 0.0, 1.0},
+					  {2.0, 4.0, 8.0, 6.0, 0.0, 5.0},
+					  {3.0, 5.0, 8.0, 0.0, 9.0, 9.0},
+					  {5.0, 6.0, 6.0, 8.0, 9.0, 0.0}};
+
+	float m3[6][6];
+	m3[0][0] = 1.0; m3[0][1] = 3.0; m3[0][2] = 3.0;
+	m3[1][0] = 1.0; m3[1][1] = 4.0; m3[1][2] = 3.0;
+	m3[2][0] = 1.0; m3[2][1] = 3.0; m3[2][2] = 4.0;
+
+	float res[6][6];
+
+	float d;
+	d = determinant(m2, 6);
+
+	if(d == 0) {
+		printf("\nDeterminant of the matrix = 0\n");
+	}
+	else {
+		cofactor(m2, 6, res);
+	}
+
+	printf("\nResults:\n");
+	for(int i = 0; i < 6; i++) {
+		for(int j = 0; j < 6; j++) {
+			printf("%.2f ", res[i][j]);
+		}
+		printf("\n");
+	}
+	printf("\n\n");
+}
 
 /**
  * Forward Kinematics implemented in parallel using CUDA GPU threads
@@ -529,7 +670,7 @@ inverseKinematics(int n, float *q_cuda, float *jType_cuda, float *dh_params_cuda
 
 	float phi, ori, ori_[3], theta, psi, normal, sum;
 
-	//Variables with _ are for spatial robot (where dimenaion = 3)
+	//Variables with _ are for spatial robot (where dimension = 3)
 	__shared__ float R[9];
 	__shared__ float p[2], p_[3];
 	__shared__ float delta_p[3], delta_p_[6], delta_q[MAX_BODIES];
@@ -551,8 +692,9 @@ void inverseKinematicsSequential() {
 	float R[3][3];
 	float p[2], p_[3];
 	float phi, ori, ori_[3], theta, psi, delta_p[3], delta_p_[6], delta_q[nb];
-	float Jacobian[3][nb], Jacobian_[6][nb];
-	float temp[nb][3], temp_[nb][6];
+	float Jacobian[3][nb], Jacobian_[6][nb], Jacobian_T[nb][3], Jacobian_T_[nb][6];
+	float temp[3][3], temp_[6][6], inverse[3][3], inverse_[6][6];
+	float res[nb][3], res_[nb][6];
 	float normal;
 	float sum;
 	float Q_output[nb][MAX_ITERATION + 1];
@@ -652,9 +794,8 @@ void inverseKinematicsSequential() {
 				// Transpose of J
 				for(int a = 0; a < 3; a++) {
 					for(int b = 0; b < nb; b++) {
-						temp[b][a] = GAIN * Jacobian[a][b];
+						Jacobian_T[b][a] = Jacobian[a][b];
 					}
-
 				}
 
 				if(method == 0) {
@@ -664,7 +805,7 @@ void inverseKinematicsSequential() {
 						delta_q[a] = 0;
 
 						for(int b = 0; b < 3; b++) {
-							delta_q[a] += temp[a][b] * delta_p[b];
+							delta_q[a] += GAIN * Jacobian_T[a][b] * delta_p[b];
 						}
 					}
 				}
@@ -684,7 +825,7 @@ void inverseKinematicsSequential() {
 				// Transpose of J
 				for(int a = 0; a < 6; a++) {
 					for(int b = 0; b < nb; b++) {
-						temp_[b][a] = GAIN * Jacobian_[a][b];
+						Jacobian_T_[b][a] = Jacobian_[a][b];
 					}
 				}
 
@@ -695,12 +836,13 @@ void inverseKinematicsSequential() {
 						delta_q[a] = 0;
 
 						for(int b = 0; b < 6; b++) {
-							delta_q[a] += temp_[a][b] * delta_p_[b];
+							delta_q[a] += GAIN * Jacobian_T_[a][b] * delta_p_[b];
 						}
 					}
 				}
 				else {
 					//delta_q = GAIN * (transpose(Jacobian) / (Jacobian / transpose(Jacobian))) * delta_p
+
 				}
 			}
 
@@ -858,6 +1000,8 @@ int checkInput() {
 int main() {
 	cudaError_t err = cudaSuccess;
 
+	testMatrix();
+
 	// Check if read input runs successfully
 	if(readInput() != 0) {
 		fprintf(stderr, "Failed to run readInput() function\n");
@@ -870,7 +1014,7 @@ int main() {
 		return EXIT_FAILURE;
 	}
 
-	generateRandomVariables(100);
+	generateRandomVariables(3);
 
 	printVariables();
 
