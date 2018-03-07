@@ -1,7 +1,6 @@
 /**
  * Author: Nik Zulhilmi Nik Fuaad
- * 		Computer Science/Software Engineering
- * 		University of Birmingham
+ * Computer Science/Software Engineering, University of Birmingham
  *
  * Forward Kinematics and Inverse Kinematics in Parallel
  *
@@ -15,14 +14,6 @@
  * 		-n-dimensional vector of joint variables.
  * 4. Denavit-Hartenberg Parameters (2d float array)
  * 		-nx4 matrix.
- * 5. PDEs, desired position - (2d int array)
- * 		-2x1 for planar robot
- * 		-3x1 for spatial robot
- * 6. ODEs, desired orientation - (2d int array)
- * 		-scalar for planar
- * 		-3x1 for 3D robot
- * 7. Method (int)
- * 		-value: 0 or 1
  *
  * This code calculates the forward kinematics of a manipulator.
  * It calculates the homogeneous transformation matrix from the base to the
@@ -40,6 +31,15 @@
  * 		-n-dimensional vector of joint variables.
  * 4. Denavit-Hartenberg Parameters (2d float array)
  * 		-nx4 matrix
+ * 5. PDEs, desired position - (2d float array)
+ * 		-2x1 for planar robot
+ * 		-3x1 for spatial robot
+ * 6. ODEs, desired orientation - (2d float array)
+ * 		-scalar for planar
+ * 		-3x1 for 3D robot
+ * 7. Method (int)
+ * 		-value: 0 or 1
+ * 8. Dimension (int) : 2 if planar, 3 is spatial
  *
  * This code calculates the inverse kinematics of a manipulator.
  * It calculates the desired end-effector's position and orientation
@@ -68,7 +68,7 @@
 #define ODES 5
 #define METHOD 6
 
-// Constant factor for inverse kinematics
+// Constant factors for inverse kinematics
 #define GAIN 0.1
 #define TOLERANCE 0.001
 #define MAX_ITERATION 10
@@ -82,6 +82,7 @@ float DH_params[MAX_BODIES][4]; // Denavit-Hartenberg Parameters
 float T[4][4];
 float J[6][MAX_BODIES];
 
+// Variable specific for inverse kinematics
 float pdes[2];
 float pdes_[3];
 float odes;
@@ -89,18 +90,17 @@ float odes_[3];
 int method;
 int dim; // size of pdes
 
-
+/**
+ * Methods for testing purposes.
+ */
 __device__ void
 testing1(float *input) {
 	int x = blockIdx.x * blockDim.x + threadIdx.x;
 
-	//__shared__ float XY[10];
 	if(x < 10) {
 		input[x] += 10;
 	}
-
 }
-
 __global__ void
 testing(int *x_input) {
 	int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -110,16 +110,16 @@ testing(int *x_input) {
 	if(x < 10) {
 		XY[x] = x;
 	}
-	testing1(XY);
-}
 
+	//testing1
+}
 
 /**
  * Forward Kinematics implemented in parallel using CUDA GPU threads
  */
 __global__ void
 forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_params_input,
-		float *t_output, float *j_output, float *test) {
+		float *t_output, float *j_output) {
 
 	int x = blockIdx.x * blockDim.x + threadIdx.x;
 	//int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -354,12 +354,15 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
  * Forward Kinematics implemented sequentially using CPU processing power.
  */
 void forwardKinematicsSequential() {
+	// Initialise T to zeros
 	for(int a = 0; a < 4; a++) {
 		for(int b = 0; b < 4; b++) {
 			T[a][b] = 0;
 		}
 	}
+	// Assign diagonal of T = 1
 	T[0][0] = 1; T[1][1] = 1; T[2][2] = 1; T[3][3] = 1;
+
 	float Ti[nb][4][4];
 	float res[4][4]; // To be used for matrix calculations
 
@@ -370,6 +373,7 @@ void forwardKinematicsSequential() {
 		}
 	}
 
+	// Set DH params according to joint types
 	for(i = 0; i < nb; i++) {
 		if(jType[i] == 1) { // Prismatic
 			DH_params[i][2] = q[i];
@@ -420,6 +424,7 @@ void forwardKinematicsSequential() {
 	float pe[3] = {T[0][3], T[1][3], T[2][3]};
 	float zil[3], pil[3], Ti1[4][4], Jp[3], Jw[3], p[3];
 
+	// Iterate through every single link
 	for(i = 0; i < nb; i++) {
 		if(i == 0) {
 			zil[0] = 0;
@@ -462,6 +467,7 @@ void forwardKinematicsSequential() {
 			pil[1] = Ti1[1][3];
 			pil[2] = Ti1[2][3];
 		}
+
 		if(jType[i] == 1) { // Prismatic
 			Jp[0] = zil[0];
 			Jp[1] = zil[1];
@@ -486,6 +492,7 @@ void forwardKinematicsSequential() {
 			Jw[2] = zil[2];
 		}
 
+		// Assign to J
 		J[0][i] = Jp[0];
 		J[1][i] = Jp[1];
 		J[2][i] = Jp[2];
@@ -493,29 +500,11 @@ void forwardKinematicsSequential() {
 		J[4][i] = Jw[1];
 		J[5][i] = Jw[2];
 	}
-
-	// Print the results: T and J matrices.
-	printf("\n\nResults for sequential algorithm: \n");
-	printf("T: \n");
-	for(i = 0; i < 4; i++) {
-		for(int j = 0; j < 4; j++) {
-			printf("%.4f ", T[i][j]);
-		}
-		printf("\n");
-	}
-
-	printf("\n");
-	printf("J: \n");
-	for(i = 0; i < 6; i++) {
-		for(int j = 0; j < nb; j++) {
-			printf("%.4f ", J[i][j]);
-		}
-		printf("\n");
-	}
 }
 
 /**
- * Find the determinant of a 3x3 or 6x6 matrix
+ * Find the determinant of a 3x3 or 6x6 matrix.
+ * Helper function for the calculation of inverse matrix.
  */
 float determinant(float a[6][6], float k) {
 	float s = 1, det = 0, b[6][6];
@@ -557,7 +546,8 @@ float determinant(float a[6][6], float k) {
 }
 
 /**
- * Find the transpose of a matrix, to find inverse
+ * Find the transpose of a matrix, to find inverse.
+ * Helper function for the calculation of inverse matrix.
  */
 void transpose(float num[6][6], float fac[6][6], float r, float res[6][6]) {
 	int i, j;
@@ -580,6 +570,7 @@ void transpose(float num[6][6], float fac[6][6], float r, float res[6][6]) {
 
 /**
  * Find the cofactor of a 3x3 or 6x6 matrix
+ * Helper function for the calculation of inverse matrix.
  */
 void cofactor(float num[6][6], float f, float res[6][6]) {
 	float b[6][6], fac[6][6];
@@ -695,25 +686,12 @@ void inverseKinematicsSequential() {
 	float Jacobian[3][nb], Jacobian_[6][nb], Jacobian_T[nb][3], Jacobian_T_[nb][6];
 	float temp[3][3], temp_[6][6], inverse[3][3], inverse_[6][6];
 	float res[nb][3], res_[nb][6];
-	float normal;
-	float sum;
+	float normal, sum;
 	float Q_output[nb][MAX_ITERATION + 1];
 
 	//for testing:
-	pdes[0] = 0.5567;
-	pdes[1] = 0.5906;
-	pdes_[0] = 0.5567;
-	pdes_[1] = 0.5906;
-	pdes_[2] = 0.3341;
-
-	odes = 3;
-	odes_[0] = 3;
-	odes_[1] = 4;
-	odes_[2] = 5;
-
 	method = 0;
 	dim = 2;
-
 
 	for(int a = 0; a < nb; a++) {
 		Q_output[a][0] = q[a];
@@ -724,7 +702,6 @@ void inverseKinematicsSequential() {
 		for(int a = 0; a < nb; a++) {
 			q[a] = Q_output[a][i-1];
 		}
-
 		forwardKinematicsSequential();
 
 		// Copy R
@@ -856,15 +833,148 @@ void inverseKinematicsSequential() {
 			}
 		}
 	}
+}
 
-	// Print q
-	printf("\nInverse Kinematics\n");
-	printf("\nQ:\n");
+void inverseKinematics_test() {
+	int flag = 0;
+	int i = 1;
+
+	// Variables
+	float R[3][3];
+	float phi, theta, psi;
+	float p[3], ori[3], delta_p[6], delta_q[nb];
+	float Jacobian[6][nb], Jacobian_T[nb][6];
+	float temp[6][6], inverse[6][6], res[nb][6];
+	float normal, sum;
+	float Q_output[nb][MAX_ITERATION + 1];
+
 	for(int a = 0; a < nb; a++) {
-		for(int b = 0; b < MAX_ITERATION + 1; b++) {
-			printf("%.4f ", Q_output[a][b]);
+		Q_output[a][0] = q[a];
+	}
+
+	while(flag == 0) {
+		// Run forward kinematics
+		for(int a = 0; a < nb; a++) {
+			q[a] = Q_output[a][i-1];
 		}
-		printf("\n");
+		forwardKinematicsSequential();
+
+		// Copy R
+		for(int a = 0; a < 3; a++) {
+			for(int b = 0; b < 3; b++) {
+				R[a][b] = T[a][b];
+			}
+		}
+
+		p[0] = T[0][3];
+		p[1] = T[1][3];
+
+		phi = atan2(R[1][0], R[0][0]);
+
+		delta_p[0] = pdes_[0] - p[0];
+		delta_p[1] = pdes_[1] - p[1];
+
+		sum = 0;
+
+		if(dim == 2) {
+			ori[0] = phi;
+
+			delta_p[2] = odes_[0] - ori[0];
+
+			// Calculate normal of vector delta_p
+			for(int a = 0; a < 3; a++) {
+				sum += pow(delta_p[a], 2);
+			}
+		}
+		else {
+			p[2] = T[2][3];
+
+			theta = atan2(-R[2][0], sqrt( pow(R[2][1], 2) + pow(R[2][2], 2)) );
+			psi = atan2(R[2][1], R[2][2]);
+
+			ori[0] = psi;
+			ori[1] = theta;
+			ori[2] = phi;
+
+			delta_p[2] = pdes_[2] - p[2];
+			delta_p[3] = odes_[0] - ori[0];
+			delta_p[4] = odes_[1] - ori[1];
+			delta_p[5] = odes_[2] - ori[2];
+
+			// Calculate normal of vector delta_p
+			for(int a = 0; a < 6; a++) {
+				sum += pow(delta_p[a], 2);
+			}
+		}
+
+		normal = sqrt(sum);
+
+		if(normal < TOLERANCE) {
+			flag = 1;
+		}
+		else {
+			if(dim == 2) {
+				for(int a = 0; a < nb; a++) {
+					Jacobian[0][a] = J[0][a];
+					Jacobian[1][a] = J[1][a];
+					Jacobian[2][a] = J[5][a];
+				}
+
+				// Transpose of J
+				for(int a = 0; a < 3; a++) {
+					for(int b = 0; b < nb; b++) {
+						Jacobian_T[b][a] = Jacobian[a][b];
+					}
+				}
+			}
+			else { // dim == 3
+				// Jacobian = J
+				for(int a = 0; a < 6; a++) {
+					for(int b = 0; b < nb; b++) {
+						Jacobian[a][b] = J[a][b];
+					}
+				}
+
+				// Transpose of J
+				for(int a = 0; a < 6; a++) {
+					for(int b = 0; b < nb; b++) {
+						Jacobian_T[b][a] = Jacobian[a][b];
+					}
+				}
+			}
+
+			if(method == 0) {
+				// delta_q = GAIN * transpose(Jacobian) * delta_p
+				// nx3 x 3 matrix
+				for(int a = 0; a < nb; a++) {
+					delta_q[a] = 0;
+
+					if(dim == 2) {
+						for(int b = 0; b < 3; b++) {
+							delta_q[a] += GAIN * Jacobian_T[a][b] * delta_p[b];
+						}
+					}
+					else {
+						for(int b = 0; b < 6; b++) {
+							delta_q[a] += GAIN * Jacobian_T[a][b] * delta_p[b];
+						}
+					}
+				}
+			}
+			else {
+				//delta_q = GAIN * (transpose(Jacobian) / (Jacobian / transpose(Jacobian))) * delta_p
+
+			}
+
+			for(int a = 0; a < nb; a++) {
+				Q_output[a][i] = Q_output[a][i - 1] + delta_q[a];
+			}
+			i++;
+
+			if(i > MAX_ITERATION) {
+				flag = 2;
+			}
+		}
 	}
 }
 
@@ -949,6 +1059,8 @@ int generateRandomVariables(int numberOfInputs) {
 	nb = numberOfInputs;
 
 	srand(time(NULL));
+
+	// Generate variables for Q, jType, and DH params
 	for(int i = 0; i < numberOfInputs; i++) {
 		jType[i] = 0;
 		q[i] = (float) rand() / (float) RAND_MAX;
@@ -959,6 +1071,19 @@ int generateRandomVariables(int numberOfInputs) {
 		}
 	}
 
+	// Generate variables for odes_ and odes_
+	for(int i = 0; i < 3; i++) {
+		pdes_[i] = (float) rand() / (float) RAND_MAX;
+		odes_[i] = rand() % 10;
+	}
+
+	odes = odes_[0];
+	pdes[0] = pdes_[0];
+	pdes[1] = pdes_[1];
+
+	method = 0;
+	dim = 2;
+
 	return 0;
 }
 
@@ -967,24 +1092,150 @@ int generateRandomVariables(int numberOfInputs) {
  */
 void printVariables() {
 	// Print variables/model
+	int i;
+
 	printf("\n");
-	printf("Number of bodies: %d\n", nb);
-	printf("Joint types: ");
-	for(int i = 0; i < nb; i++) {
+	printf("Number of bodies: %d", nb);
+	printf("\nJoint types: ");
+	for(i = 0; i < nb; i++) {
 		printf("%d ", jType[i]);
 	}
+
 	printf("\nQ: ");
-	for(int i = 0; i < nb; i++) {
+	for(i = 0; i < nb; i++) {
 		printf("%.4f ", q[i]);
 	}
 
-	printf("\nDH Params:\n");
-	for(int i = 0; i < nb; i++) {
+	printf("\nDH Params:");
+	for(i = 0; i < nb; i++) {
+		printf("\n");
+
 		for(int j = 0; j < 4; j++) {
 			printf("%.4f ", DH_params[i][j]);
 		}
-		printf("\n");
 	}
+
+	printf("\nPDES: ");
+	for(i = 0; i < 3; i++) {
+		printf("%.4f ", pdes_[i]);
+	}
+
+	printf("\nODES: ");
+	for(i = 0; i < 3; i++) {
+		printf("%.4f ", odes_[i]);
+	}
+}
+
+/**
+ * Method to analyse the results.This method does the following:
+ * 1. Print the times taken for parallel and sequential
+ * 2. Compare the times taken
+ * 3. Check if the results are the same.
+ * 4. If the results aren't the same, print the results for each.
+ * 5. If the results are the same, print one
+ */
+void analyseResults(float s_time, float p_time, float *p_T, float *p_J, float epsilon) {
+	printf("\n\n  -------  Results  -------  ");
+
+	int i, j;
+
+	// Print times
+	printf("\nTimes taken:");
+	printf("\n   Parallel (includes copying variables): %.4fs", p_time);
+	printf("\n   Sequential: %.4fs", s_time);
+
+	if(s_time < p_time) {
+		printf("\nSequential is faster");
+	}
+	else {
+		printf("\nParallel is faster");
+	}
+	printf("\nRatio of parallel to sequential: %.3f", p_time / s_time);
+
+	// Compare T
+	int true_equal_t = 0;
+	int true_equal_j = 0;
+	for(i = 0; i < 4; i++) {
+		for(j = 0; j < 4; j++) {
+			if(fabs(T[i][j] - p_T[i * 4 + j]) > epsilon) {
+				true_equal_t++;
+			}
+		}
+	}
+
+	for(i = 0; i < 6; i++) {
+		for(j = 0; j < nb; j++) {
+			if(fabs(J[i][j] - p_J[i * nb + j]) > epsilon) {
+				true_equal_j++;
+			}
+		}
+	}
+
+	// Check if the results are the same
+	if(true_equal_j + true_equal_t < 1) { // Results are the same
+		printf("\n\nConsistent outputs");
+		// Parallel version
+		printf("\nT:\n");
+		for(i = 0; i < 16; i++) {
+			if(i % 4 == 0 && i != 0) {
+				printf("\n");
+			}
+			printf("%.4f ", p_T[i]);
+		}
+
+		printf("\nJ:\n");
+		for(i = 0; i < nb * 6; i++) {
+			if(i % 6 == 0 && i > 0) {
+				printf("\n");
+			}
+			printf("%.4f ", p_J[i]);
+		}
+	}
+	else {
+		printf("\n\n - Inconsistent outputs - ");
+		if(true_equal_t > 0) { // T is different
+			// Parallel version
+			printf("\nT (parallel version):\n");
+			for(i = 0; i < 16; i++) {
+				if(i % 4 == 0 && i != 0) {
+					printf("\n");
+				}
+				printf("%.4f ", p_T[i]);
+			}
+			printf("\n");
+			// Sequential version
+			printf("\nT (sequential version):");
+			for(i = 0; i < 4; i++) {
+				printf("\n");
+				for(j = 0; j < 4; j++) {
+					printf("%.4f ", T[i][j]);
+				}
+			}
+		}
+		if(true_equal_j > 0) { // J is different
+			// Parallel version
+			printf("\nJ (parallel version):\n");
+			for(i = 0; i < 6 * nb; i++) {
+				if(i % nb == 0 && i > 0) {
+					printf("\n");
+				}
+				printf("%.4f ", p_J[i]);
+			}
+			printf("\n");
+			// Sequential version
+			printf("\nJ (sequential version):");
+			for(i = 0; i < 6; i++) {
+				printf("\n");
+				for(j = 0; j < nb; j++) {
+					printf("%.4f ", J[i][j]);
+				}
+			}
+		}
+	}
+
+
+	// Check for inverse kinematics
+
 }
 
 /**
@@ -1000,7 +1251,7 @@ int checkInput() {
 int main() {
 	cudaError_t err = cudaSuccess;
 
-	testMatrix();
+	//testMatrix();
 
 	// Check if read input runs successfully
 	if(readInput() != 0) {
@@ -1097,7 +1348,6 @@ int main() {
 		exit(EXIT_FAILURE);
 	}
 
-
 	// Copy host variables to device variables
 	err = cudaMemcpy(device_jType, host_jType, size_int, cudaMemcpyHostToDevice);
 	if(err != cudaSuccess) {
@@ -1132,7 +1382,7 @@ int main() {
 	cudaEventRecord(start, 0);
 
 	forwardKinematics<<<1, 512>>>(nb, device_jType, device_q, device_dh_params,
-			device_T, device_J, device_test);
+			device_T, device_J);
 	cudaDeviceSynchronize();
 
 	// End of timing for CUDA
@@ -1141,9 +1391,6 @@ int main() {
 	cudaEventElapsedTime(&parallel_time, start, stop);
 	cudaEventDestroy(start);
 	cudaEventDestroy(stop);
-
-	printf("\nParallel algorithm time taken: %.4f\n", parallel_time);
-
 
 	// Copy the device result variables to host variables
 
@@ -1161,36 +1408,6 @@ int main() {
 		exit(EXIT_FAILURE);
 	}
 
-	err = cudaMemcpy(host_Test_test, device_test, size_dh, cudaMemcpyDeviceToHost);
-	if(err != cudaSuccess) {
-		fprintf(stderr, "Failed to copy output J to host variable (error code %s)\n",
-				cudaGetErrorString(err));
-		exit(EXIT_FAILURE);
-	}
-	/*
-	printf("\n\n\n ------- Testing variables -------\n\n\n");
-	for(int i = 0; i < nb * 4; i++) {
-		printf("%.4f ", host_Test_test[i]);
-	}
-	printf("\n\n\n ------- End of testing variables -------\n\n\n");
-	*/
-	printf("\nResults for parallel algorithm: \n");
-	printf("T: \n");
-	for(int i = 0; i < 16; i++) {
-		if(i % 4 == 0 && i != 0) {
-			printf("\n");
-		}
-		printf("%.4f ", host_T_test[i]);
-	}
-	printf("\n");
-
-	printf("\nJ:\n");
-	for(int i = 0; i < nb * 6; i++) {
-		if(i % nb == 0 && i > 0) {
-			printf("\n");
-		}
-		printf("%.4f ", host_J_test[i]);
-	}
 
 	// free device variables
 	err = cudaFree(device_jType);
@@ -1246,21 +1463,15 @@ int main() {
 	cudaEventDestroy(start);
 	cudaEventDestroy(stop);
 
+	analyseResults(sequential_time, parallel_time, host_T_test, host_J_test, 1e-2);
+
 	//inverseKinematicsSequential();
-
-	printf("\nSequential algorithm time taken: %.4f", sequential_time);
-
-
-	// Calculate performance difference
-	float difference = parallel_time / sequential_time;
-	printf("\nRatio of parallel time to sequential time: %.3f", difference);
 
 	// Free host variables
 	free(host_jType);
 	free(host_q);
 	free(host_T_test);
 	free(host_J_test);
-
 
 
 	/*
@@ -1356,7 +1567,6 @@ int main() {
 		printf("\n");
 	}
 
-
 	err = cudaFree(d_test_x);
 	if(err != cudaSuccess) {
 		fprintf(stderr, "Failed to free x test %s", cudaGetErrorString(err));
@@ -1391,8 +1601,7 @@ int main() {
 		exit(EXIT_FAILURE);
 	}
 
-	printf("\n\n ---- Done ---- \n\n");
-
+	printf("\n\n  -------  Done  ------- \n\n");
 
 	return 0;
 }
