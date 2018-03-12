@@ -83,10 +83,8 @@ float T[4][4];
 float J[6][MAX_BODIES];
 
 // Variable specific for inverse kinematics
-float pdes[2];
-float pdes_[3];
-float odes;
-float odes_[3];
+float pdes[3];
+float odes[3];
 int method;
 int dim; // size of pdes
 float Q_output[MAX_BODIES][MAX_ITERATION + 1];
@@ -363,7 +361,7 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
 	clock_t stop_time_second = clock64();
 
 	runtime_first[x] = (int)(stop_time_first - start_time_first);
-	runtime_second[x] = (int)(stop_time_second  - start_time_second);
+	runtime_second[x] = (int)(stop_time_second - start_time_second);
 }
 
 /**
@@ -695,166 +693,6 @@ void inverseKinematicsSequential() {
 	int flag = 0;
 	int i = 1;
 
-	// Variables with _ are for spatial robot (where dimension = 3)
-	float R[3][3];
-	float p[2], p_[3];
-	float phi, ori, ori_[3], theta, psi, delta_p[3], delta_p_[6], delta_q[nb];
-	float Jacobian[3][nb], Jacobian_[6][nb], Jacobian_T[nb][3], Jacobian_T_[nb][6];
-	float temp[3][3], temp_[6][6], inverse[3][3], inverse_[6][6];
-	float res[nb][3], res_[nb][6];
-	float normal, sum;
-	//float Q_output[nb][MAX_ITERATION + 1];
-
-	//for testing:
-	method = 0;
-	dim = 2;
-
-	for(int a = 0; a < nb; a++) {
-		Q_output[a][0] = q[a];
-	}
-
-	while(flag == 0) {
-		// Run forward kinematics
-		for(int a = 0; a < nb; a++) {
-			q[a] = Q_output[a][i-1];
-		}
-		forwardKinematicsSequential();
-
-		// Copy R
-		for(int a = 0; a < 3; a++) {
-			for(int b = 0; b < 3; b++) {
-				R[a][b] = T[a][b];
-			}
-		}
-
-		if(dim == 2) {
-			p[0] = T[0][3];
-			p[1] = T[1][3];
-
-			phi = atan2(R[1][0], R[0][0]);
-			ori = phi;
-
-			delta_p[0] = pdes[0] - p[0];
-			delta_p[1] = pdes[1] - p[1];
-			delta_p[2] = odes - ori;
-
-			// Calculate normal of vector delta_p
-			sum = 0;
-			for(int a = 0; a < 3; a++) {
-				sum += pow(delta_p[a], 2);
-			}
-			normal = sqrt(sum);
-		}
-		else {
-			p_[0] = T[0][3];
-			p_[1] = T[1][3];
-			p_[2] = T[2][3];
-
-			phi = atan2(R[1][0], R[0][0]);
-			theta = atan2(-R[2][0], sqrt( pow(R[2][1], 2) + pow(R[2][2], 2)) );
-			psi = atan2(R[2][1], R[2][2]);
-
-			ori_[0] = psi;
-			ori_[1] = theta;
-			ori_[2] = phi;
-
-			delta_p_[0] = pdes_[0] - p_[0];
-			delta_p_[1] = pdes_[1] - p_[1];
-			delta_p_[2] = pdes_[2] - p_[2];
-			delta_p_[3] = odes_[0] - ori_[0];
-			delta_p_[4] = odes_[1] - ori_[1];
-			delta_p_[5] = odes_[2] - ori_[2];
-
-			// Calculate normal of vector delta_p
-			sum = 0;
-			for(int a = 0; a < 6; a++) {
-				sum += pow(delta_p_[a], 2);
-			}
-			normal = sqrt(sum);
-		}
-
-		if(normal < TOLERANCE) {
-			flag = 1;
-		}
-		else {
-			if(dim == 2) {
-				for(int a = 0; a < nb; a++) {
-					Jacobian[0][a] = J[0][a];
-					Jacobian[1][a] = J[1][a];
-					Jacobian[2][a] = J[5][a];
-				}
-
-				// Transpose of J
-				for(int a = 0; a < 3; a++) {
-					for(int b = 0; b < nb; b++) {
-						Jacobian_T[b][a] = Jacobian[a][b];
-					}
-				}
-
-				if(method == 0) {
-					// delta_q = GAIN * transpose(Jacobian) * delta_p
-					// nx3 x 3 matrix
-					for(int a = 0; a < nb; a++) {
-						delta_q[a] = 0;
-
-						for(int b = 0; b < 3; b++) {
-							delta_q[a] += GAIN * Jacobian_T[a][b] * delta_p[b];
-						}
-					}
-				}
-				else {
-					//delta_q = GAIN * (transpose(Jacobian) / (Jacobian / transpose(Jacobian))) * delta_p
-
-				}
-			}
-			else { // dim == 3
-				// Jacobian = J
-				for(int a = 0; a < 6; a++) {
-					for(int b = 0; b < nb; b++) {
-						Jacobian_[a][b] = J[a][b];
-					}
-				}
-
-				// Transpose of J
-				for(int a = 0; a < 6; a++) {
-					for(int b = 0; b < nb; b++) {
-						Jacobian_T_[b][a] = Jacobian_[a][b];
-					}
-				}
-
-				if(method == 0) {
-					// delta_q = GAIN * transpose(Jacobian) * delta_p
-					// nx6 x 6 matrix
-					for(int a = 0; a < nb; a++) {
-						delta_q[a] = 0;
-
-						for(int b = 0; b < 6; b++) {
-							delta_q[a] += GAIN * Jacobian_T_[a][b] * delta_p_[b];
-						}
-					}
-				}
-				else {
-					//delta_q = GAIN * (transpose(Jacobian) / (Jacobian / transpose(Jacobian))) * delta_p
-
-				}
-			}
-
-			for(int a = 0; a < nb; a++) {
-				Q_output[a][i] = Q_output[a][i - 1] + delta_q[a];
-			}
-			i++;
-
-			if(i > MAX_ITERATION) {
-				flag = 2;
-			}
-		}
-	}
-}
-
-void inverseKinematics_test() {
-	int flag = 0;
-	int i = 1;
-
 	// Variables
 	float R[3][3];
 	float phi, theta, psi;
@@ -862,7 +700,15 @@ void inverseKinematics_test() {
 	float Jacobian[6][nb], Jacobian_T[nb][6];
 	float temp[6][6], inverse[6][6], res[nb][6];
 	float normal, sum;
-	float Q_output[nb][MAX_ITERATION + 1];
+	//float Q_output[nb][MAX_ITERATION + 1];
+
+	/*
+	// For testing
+	pdes[0] = 0.3818; pdes[1] = 0.9122; pdes[2] = 0.4924;
+	odes[0] = 0.3550; odes[1] = 0.2810; odes[2] = 0.9727;
+	method = 0;
+	dim = 2;
+	*/
 
 	for(int a = 0; a < nb; a++) {
 		Q_output[a][0] = q[a];
@@ -887,15 +733,15 @@ void inverseKinematics_test() {
 
 		phi = atan2(R[1][0], R[0][0]);
 
-		delta_p[0] = pdes_[0] - p[0];
-		delta_p[1] = pdes_[1] - p[1];
+		delta_p[0] = pdes[0] - p[0];
+		delta_p[1] = pdes[1] - p[1];
 
 		sum = 0;
 
 		if(dim == 2) {
 			ori[0] = phi;
 
-			delta_p[2] = odes_[0] - ori[0];
+			delta_p[2] = odes[0] - ori[0];
 
 			// Calculate normal of vector delta_p
 			for(int a = 0; a < 3; a++) {
@@ -912,10 +758,10 @@ void inverseKinematics_test() {
 			ori[1] = theta;
 			ori[2] = phi;
 
-			delta_p[2] = pdes_[2] - p[2];
-			delta_p[3] = odes_[0] - ori[0];
-			delta_p[4] = odes_[1] - ori[1];
-			delta_p[5] = odes_[2] - ori[2];
+			delta_p[2] = pdes[2] - p[2];
+			delta_p[3] = odes[0] - ori[0];
+			delta_p[4] = odes[1] - ori[1];
+			delta_p[5] = odes[2] - ori[2];
 
 			// Calculate normal of vector delta_p
 			for(int a = 0; a < 6; a++) {
@@ -1089,16 +935,12 @@ int generateRandomVariables(int numberOfInputs) {
 
 	// Generate variables for odes_ and odes_
 	for(int i = 0; i < 3; i++) {
-		pdes_[i] = (float) rand() / (float) RAND_MAX;
-		odes_[i] = rand() % 10;
+		pdes[i] = (float) rand() / (float) RAND_MAX;
+		odes[i] = rand() % 10;
 	}
 
-	odes = odes_[0];
-	pdes[0] = pdes_[0];
-	pdes[1] = pdes_[1];
-
 	method = 0;
-	dim = 2;
+	dim = 3;
 
 	return 0;
 }
@@ -1133,12 +975,12 @@ void printVariables() {
 
 	printf("\nPDES: ");
 	for(i = 0; i < 3; i++) {
-		printf("%.4f ", pdes_[i]);
+		printf("%.4f ", pdes[i]);
 	}
 
 	printf("\nODES: ");
 	for(i = 0; i < 3; i++) {
-		printf("%.4f ", odes_[i]);
+		printf("%.4f ", odes[i]);
 	}
 }
 
@@ -1159,8 +1001,8 @@ void analyseResults(float s_time, float p_time, float s_T[4][4], float s_J[6][MA
 
 	// Print times
 	printf("\nTimes taken:");
-	printf("\n   Parallel (includes copying variables): %.4fs", p_time);
-	printf("\n   Sequential: %.4fs", s_time);
+	printf("\n   Parallel (includes copying variables): %.4fms", p_time);
+	printf("\n   Sequential: %.4fms", s_time);
 
 	// Compare times
 	if(s_time < p_time) {
@@ -1294,11 +1136,12 @@ void analyseResults(float s_time, float p_time, float s_T[4][4], float s_J[6][MA
 	// Print runtimes
 	printf("\n\nRuntimes:");
 	printf("\nFor first copying:");
-	printf("\nMin: %.6fs Max: %.6fs Average: %.6fs", min_f, max_f, average_f);
+	printf("\nMin: %.6fms Max: %.6fms Average: %.6fms", min_f, max_f, average_f);
 	printf("\nFor second copying:");
-	printf("\nMin: %.6fs Max: %.6fs Average: %.6fs", min_s, max_s, average_s);
-	printf("\nTotal time taken copying: %.5fs", max_f + max_s);
+	printf("\nMin: %.6fms Max: %.6fms Average: %.6fms", min_s, max_s, average_s);
+	printf("\nTotal time taken copying: %.5fms", max_f + max_s);
 	printf("\n");
+
 
 	// Check for inverse kinematics
 	// Print q
@@ -1306,7 +1149,7 @@ void analyseResults(float s_time, float p_time, float s_T[4][4], float s_J[6][MA
 	for(i = 0; i < nb; i++) {
 		printf("\n");
 		for(j = 0; j < MAX_ITERATION + 1; j++) {
-			printf("%.4f ", Q_output[i][i]);
+			printf("%.4f ", Q_output[i][j]);
 		}
 	}
 }
@@ -1326,6 +1169,11 @@ int main() {
 	int blocks = 512;
 
 	//testMatrix();
+	cudaDeviceProp prop;
+	cudaGetDeviceProperties(&prop, 0);
+
+	int clockrate = prop.clockRate;
+	printf("Clock rate: %d\n\n", clockrate);
 
 	// Check if read input runs successfully
 	if(readInput() != 0) {
@@ -1339,7 +1187,7 @@ int main() {
 		return EXIT_FAILURE;
 	}
 
-	generateRandomVariables(28);
+	generateRandomVariables(5);
 
 	printVariables();
 
