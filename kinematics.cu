@@ -951,8 +951,14 @@ inverseKinematics(const int n, const int method, const int dim,
 			delta_q[x - n] = 0;
 		}
 
+		__syncthreads();
+
 		//Run forward kinematics
-		deviceForwardKinematics(n);
+		if(x == 500) {
+			deviceForwardKinematics(n);
+		}
+
+		__syncthreads();
 
 		// Copy R
 		if(x >= 400 && x < 409) {
@@ -985,6 +991,8 @@ inverseKinematics(const int n, const int method, const int dim,
 				for(int a = 0; a < 3; a++) {
 					sum += pow(delta_p[a], 2);
 				}
+
+				normal = sqrt(sum);
 			}
 		}
 		else { // dim == 3
@@ -1023,15 +1031,13 @@ inverseKinematics(const int n, const int method, const int dim,
 				for(int a = 0; a < 6; a++) {
 					sum += pow(delta_p[a], 2);
 				}
+
+				normal = sqrt(sum);
 			}
 
 		}
 
 		__syncthreads();
-
-		if(x == 0) {
-			normal = sqrt(sum);
-		}
 
 		if(normal < TOLERANCE) {
 			flag = 1;
@@ -1095,11 +1101,9 @@ inverseKinematics(const int n, const int method, const int dim,
 				Q_cuda[(x * (MAX_ITERATION + 1)) + i] = Q_cuda[(x * (MAX_ITERATION + 1)) + (i - 1)] + delta_q[x];
 			}
 
-			if(x == 500) {
-				i++;
-				if(i > MAX_ITERATION) {
-					flag = 2;
-				}
+			i++;
+			if(i > MAX_ITERATION) {
+				flag = 2;
 			}
 		}
 
@@ -1108,7 +1112,7 @@ inverseKinematics(const int n, const int method, const int dim,
 
 	// Copy the output
 	if(x < n * (MAX_ITERATION + 1)) {
-		Q_cuda[x] = q_output[x];
+		q_output[x] = Q_cuda[x];
 	}
 }
 
@@ -1366,7 +1370,7 @@ int generateRandomVariables(int numberOfInputs) {
 	}
 
 	method = 0;
-	dim = 3;
+	dim = 2;
 
 	return 0;
 }
@@ -1418,26 +1422,26 @@ void printVariables() {
  * 4. If the results aren't the same, print the results for each.
  * 5. If the results are the same, print one
  */
-void analyseResults(float s_time, float p_time, float s_T[4][4], float s_J[6][MAX_BODIES],
-		float *p_T, float *p_J, int *runtime_first, int *runtime_second, float epsilon,
-		int blocks) {
+void analyseResults(float s_time_fk, float p_time_fk, float p_time_ik, float s_T[4][4],
+		float s_J[6][MAX_BODIES], float *p_T, float *p_J, int *runtime_first,
+		int *runtime_second, float epsilon, int blocks) {
 	printf("\n\n  -------  Results for forward kinematics  -------  ");
 
 	int i, j;
 
 	// Print times
-	printf("\nTimes taken:");
-	printf("\n   Parallel (includes copying variables): %.4fms", p_time);
-	printf("\n   Sequential: %.4fms", s_time);
+	printf("\nTimes taken for FK:");
+	printf("\n   Parallel (includes copying variables): %.4fms", p_time_fk);
+	printf("\n   Sequential: %.4fms", s_time_fk);
 
 	// Compare times
-	if(s_time < p_time) {
+	if(s_time_fk < p_time_fk) {
 		printf("\nSequential is faster");
 	}
 	else {
 		printf("\nParallel is faster");
 	}
-	printf("\nRatio of parallel to sequential: %.3f", p_time / s_time);
+	printf("\nRatio of parallel to sequential: %.3f", p_time_fk / s_time_fk);
 
 	// Compare T
 	int true_equal_t = 0;
@@ -1568,6 +1572,7 @@ void analyseResults(float s_time, float p_time, float s_T[4][4], float s_J[6][MA
 	printf("\nTotal time taken copying: %.5fms", max_f + max_s);
 	printf("\n");
 
+	printf("\n\n  -------  Results for inverse kinematics  -------  ");
 
 	// Check for inverse kinematics
 	// Print q
@@ -1578,6 +1583,17 @@ void analyseResults(float s_time, float p_time, float s_T[4][4], float s_J[6][MA
 			printf("%.4f ", Q_output[i][j]);
 		}
 	}
+}
+
+/**
+ * To get the clock rate of the device
+ */
+void getClockRate() {
+	cudaDeviceProp prop;
+	cudaGetDeviceProperties(&prop, 0);
+
+	int clockrate = prop.clockRate;
+	printf("\n\nClock rate: %d\n\n", clockrate);
 }
 
 /**
@@ -1596,13 +1612,7 @@ int main() {
 
 	//testMatrix();
 
-	/*
-	cudaDeviceProp prop;
-	cudaGetDeviceProperties(&prop, 0);
-
-	int clockrate = prop.clockRate;
-	printf("Clock rate: %d\n\n", clockrate);
-	*/
+	//getClockRate();
 
 	// Check if read input runs successfully
 	if(readInput() != 0) {
@@ -1616,7 +1626,7 @@ int main() {
 		return EXIT_FAILURE;
 	}
 
-	//generateRandomVariables(5);
+	generateRandomVariables(5);
 
 	printVariables();
 
@@ -1627,9 +1637,14 @@ int main() {
 	size_t size_T = sizeof(float) * size_t(4 * 4);
 	size_t size_J = sizeof(float) * size_t(nb * 6);
 	size_t size_runtime = blocks * sizeof(int);
+	size_t size_des = 3 * sizeof(float);
+	size_t size_q = sizeof(float) * size_t(nb * (MAX_ITERATION + 1));
 
+	// For copying purposes
 	int *host_jType = (int *) malloc(size_int);
 	float *host_q = (float *) malloc(size_float);
+	float *host_pdes = (float *) malloc(size_des);
+	float *host_odes = (float *) malloc(size_des);
 
 	// For analysing
 	float analyse_T[4][4];
@@ -1641,10 +1656,12 @@ int main() {
 	float *host_T_test = (float *) malloc(size_T);
 	float *host_J_test = (float *) malloc(size_J);
 	float *host_Test_test = (float *) malloc(size_dh);
+	float *host_Q_output = (float *) malloc(size_q);
 
 	// Check if host variables are successfully allocated
 	if(host_q == NULL || host_jType == NULL || host_T_test == NULL || host_J_test == NULL
-			|| host_runtime_first == NULL || host_runtime_second == NULL) {
+			|| host_runtime_first == NULL || host_runtime_second == NULL || host_Q_output == NULL
+			|| host_pdes == NULL || host_odes == NULL || host_J_test == NULL) {
 		fprintf(stderr, "Failed to allocate host variables\n");
 		exit(EXIT_FAILURE);
 	}
@@ -1654,6 +1671,10 @@ int main() {
 		host_jType[i] = jType[i];
 		host_q[i] = q[i];
 	}
+	for(int i = 0; i < 3; i++) {
+		host_pdes[i] = pdes[i];
+		host_odes[i] = odes[i];
+	}
 
 	// Declare device variables
 	int *device_jType = NULL;
@@ -1662,6 +1683,9 @@ int main() {
 	float *device_T = NULL;
 	float *device_J = NULL;
 	float *device_test = NULL;
+	float *device_odes = NULL;
+	float *device_pdes = NULL;
+	float *device_Q_output = NULL;
 	int *device_runtime_first = NULL;
 	int *device_runtime_second = NULL;
 
@@ -1722,6 +1746,27 @@ int main() {
 		exit(EXIT_FAILURE);
 	}
 
+	err = cudaMalloc((void **) &device_Q_output, size_q);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to allocated device Q output (error code %s)\n",
+				cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+	err = cudaMalloc((void **) &device_pdes, size_des);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to allocated device PDES (error code %s)\n",
+				cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+	err = cudaMalloc((void **) &device_odes, size_des);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to allocated device ODES (error code %s)\n",
+				cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
 	// Copy host variables to device variables
 	err = cudaMemcpy(device_jType, host_jType, size_int, cudaMemcpyHostToDevice);
 	if(err != cudaSuccess) {
@@ -1741,6 +1786,18 @@ int main() {
 		exit(EXIT_FAILURE);
 	}
 
+	err = cudaMemcpy(device_pdes, host_pdes, size_des, cudaMemcpyHostToDevice);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to copy PDES (error code %s)\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+	err = cudaMemcpy(device_odes, host_odes, size_des, cudaMemcpyHostToDevice);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to copy ODES (error code %s)\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
 
 	// CUDA configurations
 	//int numblocks = 0;
@@ -1748,9 +1805,10 @@ int main() {
 	dim3 threadsPerBlock(1024, 1, 1);
 
 	// Code for timing of CUDA kernel function
-	float parallel_time;
+	float parallel_time_fk, parallel_time_ik;
 	cudaEvent_t start, stop;
 
+	// Run forward kinematics
 	cudaEventCreate(&start);
 	cudaEventCreate(&stop);
 	cudaEventRecord(start, 0);
@@ -1762,7 +1820,7 @@ int main() {
 	// End of timing for CUDA
 	cudaEventRecord(stop, 0);
 	cudaEventSynchronize(stop);
-	cudaEventElapsedTime(&parallel_time, start, stop);
+	cudaEventElapsedTime(&parallel_time_fk, start, stop);
 	cudaEventDestroy(start);
 	cudaEventDestroy(stop);
 
@@ -1795,6 +1853,39 @@ int main() {
 				cudaGetErrorString(err));
 		exit(EXIT_FAILURE);
 	}
+
+
+	// Run inverse kinematics
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+	cudaEventRecord(start, 0);
+
+	inverseKinematics<<<1, blocks>>>(nb, method, dim, device_pdes, device_odes, device_Q_output);
+	cudaDeviceSynchronize();
+
+	cudaEventRecord(stop, 0);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&parallel_time_ik, start, stop);
+	cudaEventDestroy(start);
+	cudaEventDestroy(stop);
+
+	// Copy the device result variable(s) to host variables
+
+	err = cudaMemcpy(host_Q_output, device_Q_output, size_q, cudaMemcpyDeviceToHost);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to copy output Q_output to host variable (error code %s)\n",
+				cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+	printf("\n\nQ (parallel version):\n");
+	for(int a = 0; a < (nb * MAX_ITERATION + 1); a++) {
+		if(a % (MAX_ITERATION + 1) == 0 && a > 0) {
+			printf("\n");
+		}
+		printf("%.4f ", host_Q_output[a]);
+	}
+
 
 	// free device variables
 	err = cudaFree(device_jType);
@@ -1835,15 +1926,34 @@ int main() {
 
 	err = cudaFree(device_runtime_first);
 	if(err != cudaSuccess) {
-		fprintf(stderr, "Failed to free device test (error code %s)\n", cudaGetErrorString(err));
+		fprintf(stderr, "Failed to free device runtime first (error code %s)\n", cudaGetErrorString(err));
 		exit(EXIT_FAILURE);
 	}
 
 	err = cudaFree(device_runtime_second);
 	if(err != cudaSuccess) {
-		fprintf(stderr, "Failed to free device test (error code %s)\n", cudaGetErrorString(err));
+		fprintf(stderr, "Failed to free device runtime second (error code %s)\n", cudaGetErrorString(err));
 		exit(EXIT_FAILURE);
 	}
+
+	err = cudaFree(device_Q_output);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to free device Q output (error code %s)\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+	err = cudaFree(device_pdes);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to free device PDES (error code %s)\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+	err = cudaFree(device_odes);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to free device ODES (error code %s)\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
 
 	// Code for timing sequential algorithm
 	float sequential_time;
@@ -1879,7 +1989,7 @@ int main() {
 
 	inverseKinematicsSequential();
 
-	analyseResults(sequential_time, parallel_time, analyse_T, analyse_J,
+	analyseResults(sequential_time, parallel_time_fk, parallel_time_ik, analyse_T, analyse_J,
 			host_T_test, host_J_test, host_runtime_first, host_runtime_second,
 			1e-2, blocks);
 
@@ -1891,7 +2001,10 @@ int main() {
 	free(host_J_test);
 	free(host_runtime_first);
 	free(host_runtime_second);
-
+	free(host_pdes);
+	free(host_odes);
+	free(host_Q_output);
+	free(host_Test_test);
 
 	/*
 	// ------------------------- Start Code for testing -------------------------
