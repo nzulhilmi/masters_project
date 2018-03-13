@@ -376,6 +376,7 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
  */
 __device__
 void deviceForwardKinematics(const int n) {
+
 	int x = blockIdx.x * blockDim.x + threadIdx.x;
 	//int y = blockIdx.y * blockDim.y + threadIdx.y;
 	//int z = blockIdx.z * blockDim.z + threadIdx.z;
@@ -884,8 +885,11 @@ void testMatrix() {
  */
 __global__ void
 inverseKinematics(const int n, const int method, const int dim,
-		float *pdes_input, float *odes_input) {
+		float *pdes_input, float *odes_input, float *q_output) {
+
 	int x = blockIdx.x * blockDim.x + threadIdx.x;
+	//int y = blockIdx.y * blockDim.y + threadIdx.y;
+	//int z = blockIdx.z * blockDim.z + threadIdx.z;
 
 	int flag = 0;
 	int i = 1;
@@ -923,7 +927,7 @@ inverseKinematics(const int n, const int method, const int dim,
 	*/
 
 	if(x < n) {
-		Q_cuda[x] = q_cuda[x];
+		Q_cuda[x * (MAX_ITERATION + 1)] = q_cuda[x];
 	}
 
 	// Copy variables
@@ -939,7 +943,12 @@ inverseKinematics(const int n, const int method, const int dim,
 	while(flag == 0) {
 		// Assign Q
 		if(x < n) {
-			q_cuda[x] = Q_cuda[(i - 1) * n + x];
+			q_cuda[x] = Q_cuda[(x * (MAX_ITERATION + 1)) + (i - 1)];
+		}
+
+		// Initialise delta_q to zeros
+		if(x >= n && x < 2 * n) {
+			delta_q[x - n] = 0;
 		}
 
 		//Run forward kinematics
@@ -953,10 +962,7 @@ inverseKinematics(const int n, const int method, const int dim,
 			sum = 0;
 		}
 		if(x >= 410 && x < 412) {
-			p[x - 410] = T[(x - 410) * 4 + 3];
-		}
-		if(x >= 412 && x < 414) {
-			delta_p[x - 412] = pdes_cuda[x - 412] - p[x - 412];
+			p[x - 410] = T_cuda[(x - 410) * 4 + 3];
 		}
 
 		__syncthreads();
@@ -964,6 +970,11 @@ inverseKinematics(const int n, const int method, const int dim,
 		if(x == 0) {
 			phi = atan2(R[3], R[0]);
 		}
+		if(x >= 412 && x < 414) {
+			delta_p[x - 412] = pdes_cuda[x - 412] - p[x - 412];
+		}
+
+		__syncthreads();
 
 		if(dim == 2) {
 			if(x == 1) {
@@ -978,7 +989,7 @@ inverseKinematics(const int n, const int method, const int dim,
 		}
 		else { // dim == 3
 			if(x == 1) {
-				p[2] = T[15];
+				p[2] = T_cuda[11];
 			}
 			if(x == 2) {
 				theta = atan2(-R[6], sqrt(pow(R[7], 2) + pow(R[8], 2)));
@@ -1027,13 +1038,77 @@ inverseKinematics(const int n, const int method, const int dim,
 		}
 		else {
 			if(dim == 2) {
+				if(x < 2 * n) {
+					// Copy Jacobian from J
+					Jacobian[x] = J_cuda[x];
 
+					// Transpose of Jacobian
+					Jacobian_T[(x % 6) * 3 + (x / 6)] = Jacobian[x];
+				}
+				if(x >= 2 * n && x < 3 * n) {
+					Jacobian[x] = J_cuda[x + 3 * n];
+					Jacobian_T[(x % 6) * 3 + (x / 6)] = Jacobian[x];
+				}
 			}
 			else { // dim == 3
+				// Copy Jacobian from J
+				if(x < 6 * n) {
+					// Copy Jacobian from J
+					Jacobian[x] = J_cuda[x];
 
+					// Transpose of Jacobian
+					Jacobian_T[(x % 6) * 6 + (x / 6)] = Jacobian[x];
+				}
+			}
+
+			__syncthreads();
+
+			if(method == 0) {
+				// delta_q = GAIN * transpose(Jacobian) * delta_p
+				// nx3 x 3x1 matrix
+				if(dim == 2) {
+					if(x < n) {
+						for(int a = 0; a < 3; a++) {
+							delta_q[x] += GAIN * delta_p[a] * Jacobian_T[x * 3 + a];
+						}
+					}
+				}
+				// nx6 x 6x1 matrix
+				else { // dim == 3
+					if(x < n) {
+						for(int a = 0; a < 6; a++) {
+							delta_q[x] += GAIN * delta_p[a] * Jacobian_T[x * 6 + a];
+						}
+					}
+				}
+			}
+
+			// Pseudo-inverse matrix J^T * (J * J^T) ^ -1
+			else { // method == 1
+				// delta_q = GAIN * (transpose(Jacobian) / (Jacobian / transpose(Jacobian))) *delta_p
+			}
+
+			__syncthreads();
+
+			// Q(:,1) = Q(:,i-1) + delta_q
+			if(x < n) {
+				Q_cuda[(x * (MAX_ITERATION + 1)) + i] = Q_cuda[(x * (MAX_ITERATION + 1)) + (i - 1)] + delta_q[x];
+			}
+
+			if(x == 500) {
+				i++;
+				if(i > MAX_ITERATION) {
+					flag = 2;
+				}
 			}
 		}
 
+		__syncthreads();
+	}
+
+	// Copy the output
+	if(x < n * (MAX_ITERATION + 1)) {
+		Q_cuda[x] = q_output[x];
 	}
 }
 
