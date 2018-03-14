@@ -58,15 +58,16 @@
 #define BLOCK_SIZE 1024
 
 #define MAX_BODIES 60
-#define INPUT_NUM 63
+#define INPUT_NUM 66
 
 #define NUMBER_OF_BODIES 0
 #define JOINT_TYPE 1
 #define Q 2
 #define DH_PARAMS 3
-#define PDES 4
-#define ODES 5
-#define METHOD 6
+//#define PDES 4
+//#define ODES 5
+//#define METHOD 6
+//#define DIM 7
 
 // Constant factors for inverse kinematics
 #define GAIN 0.1
@@ -88,6 +89,13 @@ float odes[3];
 int method;
 int dim; // size of pdes
 float Q_output[MAX_BODIES][MAX_ITERATION + 1];
+
+// Variables for checking inputs
+int j_length;
+int q_length;
+int dh_length;
+int pdes_length;
+int odes_length;
 
 // Variables for CUDA kernel
 __shared__ int jType_cuda[MAX_BODIES];
@@ -1319,36 +1327,61 @@ int readInput() {
 
 	// Assign to global variables
 	nb = atoi(strings[NUMBER_OF_BODIES]);
+	method = atoi(strings[nb + 5]);
+	dim = atoi(strings[nb + 6]);
 
-	int index1 = 0, c1, bytesread1;
-	int index2 = 0, bytesread2;
-	float c2;
-	char* input1 = strings[JOINT_TYPE];
-	char* input2 = strings[Q];
+	int index1 = 0, c1, bytesread1; // J
+	int index2 = 0, bytesread2; // Q
+	int index3; // DH PARAMS
+	int index4 = 0, bytesread4; // PDES
+	int index5 = 0, bytesread5; // ODES
+	float c2, c4, c5;
+	char* input1 = strings[JOINT_TYPE]; // J
+	char* input2 = strings[Q]; // Q
+	char* input4 = strings[nb + 3]; // PDES
+	char* input5 = strings[nb + 4]; // ODES
 
 	// Assign joint type
 	while(sscanf(input1, "%d%n", &c1, &bytesread1) > 0) {
 		jType[index1++] = c1;
 		input1 += bytesread1;
 	}
+	j_length = index1;
 
 	// Assign q (vector of joint variables)
 	while(sscanf(input2, "%f%n", &c2, &bytesread2) > 0) {
 		q[index2++] = c2;
 		input2 += bytesread2;
 	}
+	q_length = index2;
 
 	// Assign DH parameters
 	for(int i = 0; i < nb; i++) {
-		int index4 = 0, bytesread4;
-		float c4;
-		char* input4 = strings[i + 3];
+		index3 = 0;
+		int bytesread3;
+		float c3;
+		char* input3 = strings[i + 3];
 
-		while(sscanf(input4, "%f%n", &c4, &bytesread4) > 0) {
-			DH_params[i][index4++] = c4;
-			input4 += bytesread4;
+		while(sscanf(input3, "%f%n", &c3, &bytesread3) > 0) {
+			DH_params[i][index3++] = c3;
+			input3 += bytesread3;
 		}
 	}
+	dh_length = index3;
+
+	// Assign PDES
+	while(sscanf(input4, "%f%n", &c4, &bytesread4) > 0) {
+		pdes[index4++] = c4;
+		input4 += bytesread4;
+	}
+	pdes_length = index4;
+
+	// Assign ODES
+	while(sscanf(input5, "%f%n", &c5, &bytesread5) > 0) {
+		odes[index5++] = c5;
+		input5 += bytesread5;
+	}
+	odes_length = index5;
 
 	fclose(file);
 
@@ -1386,7 +1419,7 @@ int generateRandomVariables(int numberOfInputs) {
 	}
 
 	method = 0;
-	dim = 2;
+	dim = (rand() % (4-2)) + 2;
 
 	return 0;
 }
@@ -1428,6 +1461,9 @@ void printVariables() {
 	for(i = 0; i < 3; i++) {
 		printf("%.4f ", odes[i]);
 	}
+
+	printf("\nMethod: %d", method);
+	printf("\nDim: %d", dim);
 }
 
 /**
@@ -1712,8 +1748,22 @@ void getClockRate() {
  * Check the consistencies of the input file.
  */
 int checkInput() {
-	// check for number of bodies and length of variables
+	// Check for number of bodies and length of variables
+	if(!(j_length == nb && q_length == nb &&
+			(pdes_length == 2 || pdes_length == 3) &&
+			(odes_length == 1 || odes_length == 3) &&
+			dh_length == 4)) {
+		fprintf(stderr, "Inconsistencies in input dimensions\n");
+		return EXIT_FAILURE;
+	}
 
+	// Check for method
+	if(method < 0 || method > 1) {
+		fprintf(stderr, "Method is not equal to 0 or 1");
+		return EXIT_FAILURE;
+	}
+
+	// Check
 
 	return 0;
 }
