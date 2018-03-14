@@ -391,6 +391,7 @@ void deviceForwardKinematics(const int n) {
 		Jp[3 * MAX_BODIES], Jw[3 * MAX_BODIES], p[3 * MAX_BODIES];
 	__shared__ float Ti1[MAX_BODIES * 16]; // 4 x 4 = 16
 
+
 	// To initialise all variables to zero
 	if(x >= 200 && x < 216) { // size 16
 		T_cuda[x - 200] = 0;
@@ -884,8 +885,8 @@ void testMatrix() {
  * Forward Kinematics implemented in parallel using CUDA GPU threads
  */
 __global__ void
-inverseKinematics(const int n, const int method, const int dim,
-		float *pdes_input, float *odes_input, float *q_output) {
+inverseKinematics(const int n, const int method, const int dim, float *pdes_input,
+		float *odes_input, float *q_output, int *runtime_first, int *runtime_second) {
 
 	int x = blockIdx.x * blockDim.x + threadIdx.x;
 	//int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -930,6 +931,9 @@ inverseKinematics(const int n, const int method, const int dim,
 		Q_cuda[x * (MAX_ITERATION + 1)] = q_cuda[x];
 	}
 
+	// Start timing here
+	clock_t start_time_first = clock64();
+
 	// Copy variables
 	if(x >= 400 && x < 403) { // size 3
 		pdes_cuda[x - 400] = pdes_input[x - 400];
@@ -937,6 +941,9 @@ inverseKinematics(const int n, const int method, const int dim,
 	if(x >= 403 && 406) { // size 3
 		odes_cuda[x - 403] = odes_input[x - 403];
 	}
+
+	// End timing here
+	clock_t stop_time_first = clock64();
 
 	__syncthreads();
 
@@ -954,9 +961,10 @@ inverseKinematics(const int n, const int method, const int dim,
 		__syncthreads();
 
 		//Run forward kinematics
-		if(x == 500) {
+		//if(x == 0) {
+			//printf("\nRun Device Kinematics");
 			deviceForwardKinematics(n);
-		}
+		//}
 
 		__syncthreads();
 
@@ -1110,10 +1118,18 @@ inverseKinematics(const int n, const int method, const int dim,
 		__syncthreads();
 	}
 
+	// Start timing here
+	clock_t start_time_second = clock64();
+
 	// Copy the output
 	if(x < n * (MAX_ITERATION + 1)) {
 		q_output[x] = Q_cuda[x];
 	}
+
+	// End timing here
+	clock_t stop_time_second = clock64();
+	runtime_first[x] = (int) (stop_time_first - start_time_first);
+	runtime_second[x] = (int) (stop_time_second - start_time_second);
 }
 
 /**
@@ -1422,10 +1438,11 @@ void printVariables() {
  * 4. If the results aren't the same, print the results for each.
  * 5. If the results are the same, print one
  */
-void analyseResults(float s_time_fk, float p_time_fk, float p_time_ik, float s_T[4][4],
-		float s_J[6][MAX_BODIES], float *p_T, float *p_J, int *runtime_first,
-		int *runtime_second, float epsilon, int blocks) {
-	printf("\n\n  -------  Results for forward kinematics  -------  ");
+void analyseResults(float s_time_fk, float s_time_ik, float p_time_fk, float p_time_ik,
+		float s_T[4][4], float s_J[6][MAX_BODIES], float *p_T, float *p_J, int *runtime_first_fk,
+		int *runtime_second_fk, float *p_Q, int *runtime_first_ik, int *runtime_second_ik,
+		float epsilon, int blocks) {
+	printf("\n\n\n  -------  Results for forward kinematics  -------  ");
 
 	int i, j;
 
@@ -1526,63 +1543,158 @@ void analyseResults(float s_time_fk, float p_time_fk, float p_time_ik, float s_T
 	}
 
 	// Array for runtimes
-	float r_f[blocks];
-	float r_s[blocks];
-	float max_f = 0, average_f = 0, min_f;
-	float max_s = 0, average_s = 0, min_s;
+	float r_f_fk[blocks];
+	float r_s_fk[blocks];
+	float max_f_fk = 0, average_f_fk = 0, min_f_fk;
+	float max_s_fk = 0, average_s_fk = 0, min_s_fk;
 
 	// Convert clock cycles to time
 	for(i = 0; i < blocks; i++) {
-		r_f[i] = runtime_first[i] / 1340000000.0f * 1000.0;
-		r_s[i] = runtime_second[i] / 1340000000.0f * 1000.0;
+		r_f_fk[i] = runtime_first_fk[i] / 1340000000.0f * 1000.0;
+		r_s_fk[i] = runtime_second_fk[i] / 1340000000.0f * 1000.0;
 	}
 
 	// Find and calculate the max, min, and average
 	for(i = 0; i < blocks; i++) {
-		if(r_f[i] > max_f) {
-			max_f = r_f[i];
+		if(r_f_fk[i] > max_f_fk) {
+			max_f_fk = r_f_fk[i];
 		}
-		if(r_s[i] > max_s) {
-			max_s = r_s[i];
+		if(r_s_fk[i] > max_s_fk) {
+			max_s_fk = r_s_fk[i];
 		}
-		average_f += r_f[i];
-		average_s += r_s[i];
+		average_f_fk += r_f_fk[i];
+		average_s_fk += r_s_fk[i];
 	}
 
-	min_f = max_f;
-	min_s = max_s;
-	average_f = average_f / blocks;
-	average_s = average_s / blocks;
+	min_f_fk = max_f_fk;
+	min_s_fk = max_s_fk;
+	average_f_fk = average_f_fk / blocks;
+	average_s_fk = average_s_fk / blocks;
 
 	for(i = 0; i < blocks; i++) {
-		if(r_f[i] < min_f) {
-			min_f = r_f[i];
+		if(r_f_fk[i] < min_f_fk) {
+			min_f_fk = r_f_fk[i];
 		}
-		if(r_s[i] < min_s) {
-			min_s = r_s[i];
+		if(r_s_fk[i] < min_s_fk) {
+			min_s_fk = r_s_fk[i];
 		}
 	}
 
 	// Print runtimes
 	printf("\n\nRuntimes:");
 	printf("\nFor first copying:");
-	printf("\nMin: %.6fms Max: %.6fms Average: %.6fms", min_f, max_f, average_f);
+	printf("\nMin: %.6fms Max: %.6fms Average: %.6fms", min_f_fk, max_f_fk, average_f_fk);
 	printf("\nFor second copying:");
-	printf("\nMin: %.6fms Max: %.6fms Average: %.6fms", min_s, max_s, average_s);
-	printf("\nTotal time taken copying: %.5fms", max_f + max_s);
+	printf("\nMin: %.6fms Max: %.6fms Average: %.6fms", min_s_fk, max_s_fk, average_s_fk);
+	printf("\nTotal time taken copying: %.5fms", max_f_fk + max_s_fk);
 	printf("\n");
 
+	// Results for IK
 	printf("\n\n  -------  Results for inverse kinematics  -------  ");
 
-	// Check for inverse kinematics
-	// Print q
-	printf("\nQ (sequential version):");
+	// Print times
+	printf("\nTimes taken for IK:");
+	printf("\n   Parallel (includes copying variables): %.4fms", p_time_ik);
+	printf("\n   Sequential: %.4fms", s_time_ik);
+
+	// Compare times
+	if(s_time_ik < p_time_ik) {
+		printf("\nSequential is faster");
+	}
+	else {
+		printf("\nParallel is faster");
+	}
+	printf("\nRatio of parallel to sequential: %.3f", p_time_ik / s_time_ik);
+
+	// Compare Q
+	int true_equal_q = 0;
 	for(i = 0; i < nb; i++) {
-		printf("\n");
 		for(j = 0; j < MAX_ITERATION + 1; j++) {
-			printf("%.4f ", Q_output[i][j]);
+			if(fabs(Q_output[i][j] - p_Q[i * (MAX_ITERATION + 1) + j]) > epsilon) {
+				true_equal_q++;
+			}
 		}
 	}
+
+	// Check if the results are the same
+	if(true_equal_q == 0) {
+		printf("\n\nConsistent outputs");
+		// Parallel version
+		printf("\nQ:\n");
+		for(i = 0; i < nb * (MAX_ITERATION + 1); i++) {
+			if(i % (MAX_ITERATION + 1) == 0 && i > 0) {
+				printf("\n");
+			}
+			printf("%.4f ", p_Q[i]);
+		}
+	}
+	else {
+		printf("\n\n - Inconsistent outputs - ");
+		// Parallel version
+		printf("\nQ (parallel version):\n");
+		for(i = 0; i < nb * (MAX_ITERATION + 1); i++) {
+			if(i % (MAX_ITERATION + 1) == 0 && i > 0) {
+				printf("\n");
+			}
+			printf("%.4f ", p_Q[i]);
+		}
+		printf("\n");
+		// Sequential version
+		printf("\nQ (sequential version):");
+		for(i = 0; i < nb; i++) {
+			printf("\n");
+			for(j = 0; j < (MAX_ITERATION + 1); j++) {
+				printf("%.4f ", Q_output[i][j]);
+			}
+		}
+	}
+
+	// Array for runtimes
+	float r_f_ik[blocks];
+	float r_s_ik[blocks];
+	float max_f_ik = 0, average_f_ik = 0, min_f_ik;
+	float max_s_ik = 0, average_s_ik = 0, min_s_ik;
+
+	// Convert clock cycles to time
+	for(i = 0; i < blocks; i++) {
+		r_f_ik[i] = runtime_first_ik[i] / 1340000000.0f * 1000.0;
+		r_s_ik[i] = runtime_second_ik[i] / 1340000000.0f * 1000.0;
+	}
+
+	// Find and calculate the max, min, and average
+	for(i = 0; i < blocks; i++) {
+		if(r_f_ik[i] > max_f_ik) {
+			max_f_ik = r_f_ik[i];
+		}
+		if(r_s_ik[i] > max_s_ik) {
+			max_s_ik = r_s_ik[i];
+		}
+		average_f_ik += r_f_ik[i];
+		average_s_ik += r_s_ik[i];
+	}
+
+	min_f_ik = max_f_ik;
+	min_s_ik = max_s_ik;
+	average_f_ik = average_f_ik / blocks;
+	average_s_ik = average_s_ik / blocks;
+
+	for(i = 0; i < blocks; i++) {
+		if(r_f_ik[i] < min_f_ik) {
+			min_f_ik = r_f_ik[i];
+		}
+		if(r_s_ik[i] < min_s_ik) {
+			min_s_ik = r_s_ik[i];
+		}
+	}
+
+	// Print runtimes
+	printf("\n\nRuntimes:");
+	printf("\nFor first copying:");
+	printf("\nMin: %.6fms Max: %.6fms Average: %.6fms", min_f_ik, max_f_ik, average_f_ik);
+	printf("\nFor second copying:");
+	printf("\nMin: %.6fms Max: %.6fms Average: %.6fms", min_s_ik, max_s_ik, average_s_ik);
+	printf("\nTotal time taken copying: %.5fms", max_f_ik + max_s_ik);
+	printf("\n");
 }
 
 /**
@@ -1649,8 +1761,10 @@ int main() {
 	// For analysing
 	float analyse_T[4][4];
 	float analyse_J[6][MAX_BODIES];
-	int *host_runtime_first = (int *) malloc(size_runtime);
-	int *host_runtime_second = (int *) malloc(size_runtime);
+	int *host_runtime_first_fk = (int *) malloc(size_runtime);
+	int *host_runtime_second_fk = (int *) malloc(size_runtime);
+	int *host_runtime_first_ik = (int *) malloc(size_runtime);
+	int *host_runtime_second_ik = (int *) malloc(size_runtime);
 
 	// For output
 	float *host_T_test = (float *) malloc(size_T);
@@ -1660,8 +1774,9 @@ int main() {
 
 	// Check if host variables are successfully allocated
 	if(host_q == NULL || host_jType == NULL || host_T_test == NULL || host_J_test == NULL
-			|| host_runtime_first == NULL || host_runtime_second == NULL || host_Q_output == NULL
-			|| host_pdes == NULL || host_odes == NULL || host_J_test == NULL) {
+			|| host_runtime_first_fk == NULL || host_runtime_second_fk == NULL || host_Q_output == NULL
+			|| host_pdes == NULL || host_odes == NULL || host_J_test == NULL
+			|| host_runtime_first_ik == NULL || host_runtime_second_ik == NULL) {
 		fprintf(stderr, "Failed to allocate host variables\n");
 		exit(EXIT_FAILURE);
 	}
@@ -1686,8 +1801,10 @@ int main() {
 	float *device_odes = NULL;
 	float *device_pdes = NULL;
 	float *device_Q_output = NULL;
-	int *device_runtime_first = NULL;
-	int *device_runtime_second = NULL;
+	int *device_runtime_first_fk = NULL;
+	int *device_runtime_second_fk = NULL;
+	int *device_runtime_first_ik = NULL;
+	int *device_runtime_second_ik = NULL;
 
 	// Allocate device variables
 	err = cudaMalloc((void **) &device_jType, size_int);
@@ -1732,16 +1849,16 @@ int main() {
 		exit(EXIT_FAILURE);
 	}
 
-	err = cudaMalloc((void **) &device_runtime_first, size_runtime);
+	err = cudaMalloc((void **) &device_runtime_first_fk, size_runtime);
 	if(err != cudaSuccess) {
-		fprintf(stderr, "Failed to allocate device runtime first variable (error code %s)\n",
+		fprintf(stderr, "Failed to allocate device runtime first FK variable (error code %s)\n",
 				cudaGetErrorString(err));
 		exit(EXIT_FAILURE);
 	}
 
-	err = cudaMalloc((void **) &device_runtime_second, size_runtime);
+	err = cudaMalloc((void **) &device_runtime_second_fk, size_runtime);
 	if(err != cudaSuccess) {
-		fprintf(stderr, "Failed to allocate device runtime second variable (error code %s)\n",
+		fprintf(stderr, "Failed to allocate device runtime second FK variable (error code %s)\n",
 				cudaGetErrorString(err));
 		exit(EXIT_FAILURE);
 	}
@@ -1766,6 +1883,21 @@ int main() {
 				cudaGetErrorString(err));
 		exit(EXIT_FAILURE);
 	}
+
+	err = cudaMalloc((void **) &device_runtime_first_ik, size_runtime);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to allocated device runtime first IK variable (error code %s)\n",
+				cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+	err = cudaMalloc((void **) &device_runtime_second_ik, size_runtime);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to allocated device runtime second IK variable (error code %s)\n",
+				cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
 
 	// Copy host variables to device variables
 	err = cudaMemcpy(device_jType, host_jType, size_int, cudaMemcpyHostToDevice);
@@ -1792,12 +1924,6 @@ int main() {
 		exit(EXIT_FAILURE);
 	}
 
-	err = cudaMemcpy(device_odes, host_odes, size_des, cudaMemcpyHostToDevice);
-	if(err != cudaSuccess) {
-		fprintf(stderr, "Failed to copy ODES (error code %s)\n", cudaGetErrorString(err));
-		exit(EXIT_FAILURE);
-	}
-
 
 	// CUDA configurations
 	//int numblocks = 0;
@@ -1814,7 +1940,7 @@ int main() {
 	cudaEventRecord(start, 0);
 
 	forwardKinematics<<<1, blocks>>>(nb, device_jType, device_q, device_dh_params,
-			device_T, device_J, device_runtime_first, device_runtime_second);
+			device_T, device_J, device_runtime_first_fk, device_runtime_second_fk);
 	cudaDeviceSynchronize();
 
 	// End of timing for CUDA
@@ -1840,16 +1966,16 @@ int main() {
 		exit(EXIT_FAILURE);
 	}
 
-	err = cudaMemcpy(host_runtime_first, device_runtime_first, size_runtime, cudaMemcpyDeviceToHost);
+	err = cudaMemcpy(host_runtime_first_fk, device_runtime_first_fk, size_runtime, cudaMemcpyDeviceToHost);
 	if(err != cudaSuccess) {
-		fprintf(stderr, "Failed to copy output runtime first to host variable (error code %s)\n",
+		fprintf(stderr, "Failed to copy output runtime first FK to host variable (error code %s)\n",
 				cudaGetErrorString(err));
 		exit(EXIT_FAILURE);
 	}
 
-	err = cudaMemcpy(host_runtime_second, device_runtime_second, size_runtime, cudaMemcpyDeviceToHost);
+	err = cudaMemcpy(host_runtime_second_fk, device_runtime_second_fk, size_runtime, cudaMemcpyDeviceToHost);
 	if(err != cudaSuccess) {
-		fprintf(stderr, "Failed to copy output runtime second to host variable (error code %s)\n",
+		fprintf(stderr, "Failed to copy output runtime second FK to host variable (error code %s)\n",
 				cudaGetErrorString(err));
 		exit(EXIT_FAILURE);
 	}
@@ -1860,7 +1986,8 @@ int main() {
 	cudaEventCreate(&stop);
 	cudaEventRecord(start, 0);
 
-	inverseKinematics<<<1, blocks>>>(nb, method, dim, device_pdes, device_odes, device_Q_output);
+	inverseKinematics<<<1, blocks>>>(nb, method, dim, device_pdes, device_odes, device_Q_output,
+			device_runtime_first_ik, device_runtime_second_ik);
 	cudaDeviceSynchronize();
 
 	cudaEventRecord(stop, 0);
@@ -1878,12 +2005,18 @@ int main() {
 		exit(EXIT_FAILURE);
 	}
 
-	printf("\n\nQ (parallel version):\n");
-	for(int a = 0; a < (nb * MAX_ITERATION + 1); a++) {
-		if(a % (MAX_ITERATION + 1) == 0 && a > 0) {
-			printf("\n");
-		}
-		printf("%.4f ", host_Q_output[a]);
+	err = cudaMemcpy(host_runtime_first_ik, device_runtime_first_ik, size_runtime, cudaMemcpyDeviceToHost);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to copy output runtime first IK to host variable (error code %s)\n",
+				cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+	err = cudaMemcpy(host_runtime_second_ik, device_runtime_second_ik, size_runtime, cudaMemcpyDeviceToHost);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to copy output runtime second IK to host variable (error code %s)\n",
+				cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
 	}
 
 
@@ -1924,15 +2057,15 @@ int main() {
 		exit(EXIT_FAILURE);
 	}
 
-	err = cudaFree(device_runtime_first);
+	err = cudaFree(device_runtime_first_fk);
 	if(err != cudaSuccess) {
-		fprintf(stderr, "Failed to free device runtime first (error code %s)\n", cudaGetErrorString(err));
+		fprintf(stderr, "Failed to free device runtime first FK (error code %s)\n", cudaGetErrorString(err));
 		exit(EXIT_FAILURE);
 	}
 
-	err = cudaFree(device_runtime_second);
+	err = cudaFree(device_runtime_second_fk);
 	if(err != cudaSuccess) {
-		fprintf(stderr, "Failed to free device runtime second (error code %s)\n", cudaGetErrorString(err));
+		fprintf(stderr, "Failed to free device runtime second FK (error code %s)\n", cudaGetErrorString(err));
 		exit(EXIT_FAILURE);
 	}
 
@@ -1954,9 +2087,21 @@ int main() {
 		exit(EXIT_FAILURE);
 	}
 
+	err = cudaFree(device_runtime_first_ik);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to free device runtime first IK (error code %s)\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+	err = cudaFree(device_runtime_second_ik);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to free device runtime second IK (error code %s)\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
 
 	// Code for timing sequential algorithm
-	float sequential_time;
+	float sequential_time_fk, sequential_time_ik;
 
 	cudaEventCreate(&start);
 	cudaEventCreate(&stop);
@@ -1968,7 +2113,7 @@ int main() {
 	//End of timing for sequential algorithm
 	cudaEventRecord(stop, 0);
 	cudaEventSynchronize(stop);
-	cudaEventElapsedTime(&sequential_time, start, stop);
+	cudaEventElapsedTime(&sequential_time_fk, start, stop);
 	cudaEventDestroy(start);
 	cudaEventDestroy(stop);
 
@@ -1987,11 +2132,23 @@ int main() {
 		}
 	}
 
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+	cudaEventRecord(start, 0);
+
+	// Run inverse kinematics
 	inverseKinematicsSequential();
 
-	analyseResults(sequential_time, parallel_time_fk, parallel_time_ik, analyse_T, analyse_J,
-			host_T_test, host_J_test, host_runtime_first, host_runtime_second,
-			1e-2, blocks);
+	//End of timing for sequential algorithm
+	cudaEventRecord(stop, 0);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&sequential_time_ik, start, stop);
+	cudaEventDestroy(start);
+	cudaEventDestroy(stop);
+
+	analyseResults(sequential_time_fk, sequential_time_ik, parallel_time_fk, parallel_time_ik,
+			analyse_T, analyse_J, host_T_test, host_J_test, host_runtime_first_fk, host_runtime_second_fk,
+			host_Q_output, host_runtime_first_ik, host_runtime_second_ik, 1e-2, blocks);
 
 
 	// Free host variables
@@ -1999,12 +2156,14 @@ int main() {
 	free(host_q);
 	free(host_T_test);
 	free(host_J_test);
-	free(host_runtime_first);
-	free(host_runtime_second);
+	free(host_runtime_first_fk);
+	free(host_runtime_second_fk);
 	free(host_pdes);
 	free(host_odes);
 	free(host_Q_output);
 	free(host_Test_test);
+	free(host_runtime_first_ik);
+	free(host_runtime_second_ik);
 
 	/*
 	// ------------------------- Start Code for testing -------------------------
