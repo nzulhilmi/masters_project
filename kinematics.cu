@@ -57,8 +57,8 @@
 
 #define BLOCK_SIZE 1024
 
-#define MAX_BODIES 60
-#define INPUT_NUM 66
+#define MAX_BODIES 80
+#define INPUT_NUM 87
 
 #define NUMBER_OF_BODIES 0
 #define JOINT_TYPE 1
@@ -98,12 +98,12 @@ int pdes_length;
 int odes_length;
 
 // Variables for CUDA kernel
-__shared__ int jType_cuda[MAX_BODIES];
-__shared__ float q_cuda[MAX_BODIES];
-__shared__ float T_cuda[16];
-__shared__ float J_cuda[MAX_BODIES * 6];
-__shared__ float dh_params_cuda[MAX_BODIES * 4];
-__shared__ float Q_cuda[MAX_BODIES * MAX_ITERATION + 1];
+//__shared__ int jType_cuda[MAX_BODIES];
+//__shared__ float q_cuda[MAX_BODIES];
+//__shared__ float T_cuda[16];
+//__shared__ float J_cuda[MAX_BODIES * 6];
+//__shared__ float dh_params_cuda[MAX_BODIES * 4];
+//__shared__ float Q_cuda[MAX_BODIES * MAX_ITERATION + 1];
 
 /**
  * Methods for testing purposes.
@@ -149,6 +149,8 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
 	__shared__ float pe[3 * MAX_BODIES], zi1[3 * MAX_BODIES], pi1[3 * MAX_BODIES],
 		Jp[3 * MAX_BODIES], Jw[3 * MAX_BODIES], p[3 * MAX_BODIES];
 	__shared__ float Ti1[MAX_BODIES * 16]; // 4 x 4 = 16
+	__shared__ float T_cuda[16], J_cuda[6 * MAX_BODIES];
+	__shared__ float jType_cuda[MAX_BODIES], q_cuda[MAX_BODIES], dh_params_cuda[4 * MAX_BODIES];
 
 	// To initialise all variables to zero
 	if(x >= 200 && x < 216) { // size 16
@@ -290,7 +292,6 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
 		__syncthreads();
 	}
 
-
 	// Jacobian calculations
 
 	// Initialise pe
@@ -376,219 +377,6 @@ forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_param
 
 	runtime_first[x] = (int)(stop_time_first - start_time_first);
 	runtime_second[x] = (int)(stop_time_second - start_time_second);
-}
-
-/**
- * Forward Kinematics Device Function
- * To be used for inverse kinematics in kernel mode
- */
-__device__
-void deviceForwardKinematics(const int n) {
-
-	int x = blockIdx.x * blockDim.x + threadIdx.x;
-	//int y = blockIdx.y * blockDim.y + threadIdx.y;
-	//int z = blockIdx.z * blockDim.z + threadIdx.z;
-
-	// Variables for homogeneous matrix calculations
-	__shared__ float Ti[MAX_BODIES * 16], res[16]; // 4 x 4 = 16
-	__shared__ float a_i[MAX_BODIES], alpha_i[MAX_BODIES], d_i[MAX_BODIES], theta_i[MAX_BODIES];
-	__shared__ float ct[MAX_BODIES], st[MAX_BODIES], ca[MAX_BODIES], sa[MAX_BODIES];
-
-	// Variables for Jacobian calculations
-	__shared__ float pe[3 * MAX_BODIES], zi1[3 * MAX_BODIES], pi1[3 * MAX_BODIES],
-		Jp[3 * MAX_BODIES], Jw[3 * MAX_BODIES], p[3 * MAX_BODIES];
-	__shared__ float Ti1[MAX_BODIES * 16]; // 4 x 4 = 16
-
-
-	// To initialise all variables to zero
-	if(x >= 200 && x < 216) { // size 16
-		T_cuda[x - 200] = 0;
-	}
-	/*
-	if(x >= 316 && x < 332) { // size 16
-		res[x - 316] = 0;
-	}
-	*/
-	if(x >= 248 && x < 264) { // size 16
-		Ti1[x - 248] = 0;
-	}
-	if(x >= 264 && x < 267) { // size 3
-		pi1[x - 264] = 0;
-	}
-	if(x >= 267 && x < 270) { // size 3
-		zi1[x - 267] = 0;
-	}
-	if(x >= 270 && x < 270 + (n * 6)) { // size n x 6
-		J_cuda[x - 270] = 0;
-	}
-
-	__syncthreads();
-
-	// Assign T diagonal
-	if(x == 500) {
-		T_cuda[0] = 1;
-		T_cuda[5] = 1;
-		T_cuda[10] = 1;
-		T_cuda[15] = 1;
-	}
-
-	// Assign Ti1 diagonal
-	if(x == 501) {
-		Ti1[0] = 1;
-		Ti1[5] = 1;
-		Ti1[10] = 1;
-		Ti1[15] = 1;
-	}
-
-	// Assign last element of zi1 to 1
-	if(x == 502) {
-		zi1[2] = 1;
-	}
-
-	// Assign DH params for prismatic and revolute joints
-	if(x < n) {
-		if(jType_cuda[x] == 1) { // Prismatic
-			dh_params_cuda[x * 4 + 2] = q_cuda[x];
-		}
-		else { // Resolute
-			dh_params_cuda[x * 4 + 3] = q_cuda[x];
-		}
-	}
-
-	__syncthreads();
-
-	// Assign a_i, alpha_i, d_i, theta_i
-	if(x < n) {
-		a_i[x] = dh_params_cuda[x * 4];
-	}
-	if(x >= n && x < 2 * n) {
-		alpha_i[x % n] = dh_params_cuda[(x % n) * 4 + 1];
-	}
-	if(x >= 2 * n && x < 3 * n) {
-		d_i[x % n] = dh_params_cuda[(x % n) * 4 + 2];
-	}
-	if(x >= 3 * n && x < 4 * n) {
-		theta_i[x % n] = dh_params_cuda[(x % n) * 4 + 3];
-	}
-
-	__syncthreads();
-
-	// Assign ct, st, ca, sa
-	if(x < n) {
-		ct[x] = cos(theta_i[x]);
-	}
-	if(x >= n && x < 2 * n) {
-		st[x % n] = sin(theta_i[x % n]);
-	}
-	if(x >= 2 * n && x < 3 * n) {
-		ca[x % n] = cos(alpha_i[x % n]);
-	}
-	if(x >= 3 * n && x < 4 * n) {
-		sa[x % n] = sin(alpha_i[x % n]);
-	}
-
-	__syncthreads();
-
-	// Assign matrix Ti
-	if(x < n) {
-		Ti[x * 16 + 0] = ct[x]; 			Ti[x * 16 + 1] = -st[x] * ca[x];				Ti[x * 16 + 2] = st[x] * sa[x];					Ti[x * 16 + 3] = a_i[x] * ct[x];
-	}
-	if(x >= n && x < 2 * n) {
-		Ti[(x % n) * 16 + 4] = st[x % n];	Ti[(x % n) * 16 + 5] = ct[x % n] * ca[x % n];	Ti[(x % n) * 16 + 6] = -ct[x % n] * sa[x % n];	Ti[(x % n) * 16 + 7] = a_i[x % n] * st[x % n];
-	}
-	if(x >= 2 * n && x < 3 * n) {
-		Ti[(x % n) * 16 + 8] = 0;			Ti[(x % n) * 16 + 9] = sa[x % n];				Ti[(x % n) * 16 + 10] = ca[x % n];				Ti[(x % n) * 16 + 11] = d_i[x % n];
-	}
-	if(x >= 3 * n && x < 4 * n) {
-		Ti[(x % n) * 16 + 12] = 0;			Ti[(x % n) * 16 + 13] = 0;						Ti[(x % n) * 16 + 14] = 0;						Ti[(x % n) * 16 + 15] = 1;
-	}
-
-	__syncthreads();
-
-	// Matrix multiplication T = T * Ti[i]
-	for(int i = 0; i < n; i++) {
-		if(x < 16) { // 1 thread per 1 value in 4 x 4 matrix
-			res[x] = 0;
-
-			for(int a = 0; a < 4; a++) {
-				res[x] += T_cuda[(x / 4) * 4 + a] * Ti[i * 16 + x % 4 + a * 4];
-			}
-
-			// Copy matrix res to T
-			T_cuda[x] = res[x];
-		}
-
-		__syncthreads();
-	}
-
-
-	// Jacobian calculations
-
-	// Initialise pe
-	if(x >= 300 && x < 303) {
-		pe[x - 300] = T_cuda[(x - 300) * 4 + 3];
-	}
-
-	// Matrix multiplication Ti1 = Ti1 * Ti
-	for(int i = 1; i < n; i++) {
-		if(x < 16) {
-			res[x] = 0;
-
-			for(int a = 0; a < 4; a++) {
-				res[x] += Ti1[(i - 1) * 16 + (x / 4) * 4 + a] * Ti[(i - 1) * 16 + (x % 4) + a * 4];
-			}
-
-			// Copy res to Ti1
-			Ti1[i * 16 + x] = res[x];
-		}
-
-		__syncthreads();
-	}
-
-	// Assign zi1
-	if(x >= 3 && x < 3 * n) {
-		zi1[x] = Ti1[(x / 3) * 16 + (x % 3) * 4 + 2];
-	}
-
-	// Assign pi1
-	if(x >= 3 + 3 * n && x < 6 * n) {
-		pi1[x - 3 * n] = Ti1[((x - 3 * n) / 3) * 16 + (x % 3) * 4 + 3];
-	}
-
-	__syncthreads();
-
-	// Assign p, Jp, and Jw based on joint types
-	if(x < 3 * n) {
-		if(jType_cuda[x / 3] == 1) { // Prismatic
-			Jp[x] = zi1[x];
-			Jw[x] = 0;
-		}
-		else { // Revolute
-			p[x] = pe[x % 3] - pi1[x];
-			Jw[x] = zi1[x];
-
-			// Cross product
-			if(x % 3 == 0) {
-				Jp[x] = zi1[x + 1] * p[x + 2] - zi1[x + 2] * p[x + 1];
-			}
-			if(x % 3 == 1) {
-				Jp[x] = zi1[x + 1] * p[x - 1] - zi1[x - 1] * p[x + 1];
-			}
-			if(x % 3 == 2) {
-				Jp[x] = zi1[x - 2] * p[x - 1] - zi1[x - 1] * p[x - 2];
-			}
-		}
-	}
-
-	__syncthreads();
-
-	// Assign J
-	if(x < 3 * n) { // top 3 rows
-		J_cuda[x] = Jp[(x % n) * 3 + (x / n)];
-	}
-	if(x >= 3 * n && x < 6 * n) { // bottom 3 rows
-		J_cuda[x] = Jw[(x % n) * 3 + ((x - 3 * n) / n)];
-	}
 }
 
 /**
@@ -890,11 +678,12 @@ void testMatrix() {
 }
 
 /**
- * Forward Kinematics implemented in parallel using CUDA GPU threads
+ * Inverse Kinematics implemented in parallel using CUDA GPU threads
  */
 __global__ void
 inverseKinematics(const int n, const int method, const int dim, float *pdes_input,
-		float *odes_input, float *q_output, int *runtime_first, int *runtime_second) {
+		float *odes_input, float *q_output, int *runtime_first, int *runtime_second,
+		float *dh_params_input, float *q_input, int *jType_input) {
 
 	int x = blockIdx.x * blockDim.x + threadIdx.x;
 	//int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -903,15 +692,28 @@ inverseKinematics(const int n, const int method, const int dim, float *pdes_inpu
 	int flag = 0;
 	int i = 1;
 
-	// Variables
-	float phi, theta, psi, normal, sum;
-	__shared__ float R[9], p[3], ori[3], delta_p[6], delta_q[MAX_BODIES];
+	// Variables for inverse kinematics
+	__shared__ float phi[1], theta[1], psi[1], normal[1], sum[1];
+	__shared__ float R[9], p_ik[3], ori[3], delta_p[6], delta_q[MAX_BODIES];
 	__shared__ float Jacobian[6 * MAX_BODIES], Jacobian_T[MAX_BODIES * 6];
-	__shared__ float temp[6 * 6], inverse[6 * 6], res[MAX_BODIES * 6];
+	__shared__ float temp[6 * 6], inverse[6 * 6];
+
+	// Variables for forward kinematics
+	// Variables for homogeneous matrix calculations
+	__shared__ float Ti[MAX_BODIES * 16], res[16]; // 4 x 4 = 16
+	__shared__ float a_i[MAX_BODIES], alpha_i[MAX_BODIES], d_i[MAX_BODIES], theta_i[MAX_BODIES];
+	__shared__ float ct[MAX_BODIES], st[MAX_BODIES], ca[MAX_BODIES], sa[MAX_BODIES];
+
+	// Variables for Jacobian calculations
+	__shared__ float pe[3 * MAX_BODIES], zi1[3 * MAX_BODIES], pi1[3 * MAX_BODIES],
+		Jp[3 * MAX_BODIES], Jw[3 * MAX_BODIES], p_fk[3 * MAX_BODIES];
+	__shared__ float Ti1[MAX_BODIES * 16]; // 4 x 4 = 16
 
 	// External variables
 	__shared__ float pdes_cuda[3], odes_cuda[3];
-	//__shared__ float Q_cuda[MAX_BODIES * MAX_ITERATION + 1];
+	__shared__ float Q_cuda[MAX_BODIES * MAX_ITERATION + 1];
+	__shared__ float T_cuda[16], J_cuda[6 * MAX_BODIES];
+	__shared__ float jType_cuda[MAX_BODIES], q_cuda[MAX_BODIES], dh_params_cuda[4 * MAX_BODIES];
 
 	/*
 	// For testing
@@ -935,19 +737,31 @@ inverseKinematics(const int n, const int method, const int dim, float *pdes_inpu
 	}
 	*/
 
-	if(x < n) {
-		Q_cuda[x * (MAX_ITERATION + 1)] = q_cuda[x];
-	}
-
 	// Start timing here
 	clock_t start_time_first = clock64();
 
 	// Copy variables
-	if(x >= 400 && x < 403) { // size 3
-		pdes_cuda[x - 400] = pdes_input[x - 400];
+	if(x >= n && x < 2 * n) {
+		jType_cuda[x - n] = jType_input[x - n];
 	}
-	if(x >= 403 && 406) { // size 3
-		odes_cuda[x - 403] = odes_input[x - 403];
+	if(x >= 2 * n && x < 3 * n) {
+		q_cuda[x - 2 * n] = q_input[x - 2 * n];
+
+		// Assign Q_cuda
+		Q_cuda[(x - 2 * n) * (MAX_ITERATION + 1)] = q_cuda[x - 2 * n];
+	}
+
+	// Copy dh params
+	if(x >= 3 * n && x < n * 7) {
+		dh_params_cuda[x - 3 * n] = dh_params_input[x - 3 * n];
+	}
+
+	// Copy PDES and ODES
+	if(x >= 500 && x < 503) { // size 3
+		pdes_cuda[x - 500] = pdes_input[x - 500];
+	}
+	if(x >= 503 && 506) { // size 3
+		odes_cuda[x - 503] = odes_input[x - 503];
 	}
 
 	// End timing here
@@ -968,11 +782,194 @@ inverseKinematics(const int n, const int method, const int dim, float *pdes_inpu
 
 		__syncthreads();
 
-		//Run forward kinematics
-		//if(x == 0) {
-			//printf("\nRun Device Kinematics");
-			deviceForwardKinematics(n);
-		//}
+		// ----- Run forward kinematics -----
+
+		// To initialise all variables to zero
+		if(x >= 200 && x < 216) { // size 16
+			T_cuda[x - 200] = 0;
+		}
+		if(x >= 248 && x < 264) { // size 16
+			Ti1[x - 248] = 0;
+		}
+		if(x >= 264 && x < 267) { // size 3
+			pi1[x - 264] = 0;
+		}
+		if(x >= 267 && x < 270) { // size 3
+			zi1[x - 267] = 0;
+		}
+		if(x >= 270 && x < 270 + (n * 6)) { // size n x 6
+			J_cuda[x - 270] = 0;
+		}
+
+		__syncthreads();
+
+		// Assign T diagonal
+		if(x == 500) {
+			T_cuda[0] = 1;
+			T_cuda[5] = 1;
+			T_cuda[10] = 1;
+			T_cuda[15] = 1;
+		}
+
+		// Assign Ti1 diagonal
+		if(x == 501) {
+			Ti1[0] = 1;
+			Ti1[5] = 1;
+			Ti1[10] = 1;
+			Ti1[15] = 1;
+		}
+
+		// Assign last element of zi1 to 1
+		if(x == 502) {
+			zi1[2] = 1;
+		}
+
+		// Assign DH params for prismatic and revolute joints
+		if(x < n) {
+			if(jType_cuda[x] == 1) { // Prismatic
+				dh_params_cuda[x * 4 + 2] = q_cuda[x];
+			}
+			else { // Resolute
+				dh_params_cuda[x * 4 + 3] = q_cuda[x];
+			}
+		}
+
+		__syncthreads();
+
+		// Assign a_i, alpha_i, d_i, theta_i
+		if(x < n) {
+			a_i[x] = dh_params_cuda[x * 4];
+		}
+		if(x >= n && x < 2 * n) {
+			alpha_i[x % n] = dh_params_cuda[(x % n) * 4 + 1];
+		}
+		if(x >= 2 * n && x < 3 * n) {
+			d_i[x % n] = dh_params_cuda[(x % n) * 4 + 2];
+		}
+		if(x >= 3 * n && x < 4 * n) {
+			theta_i[x % n] = dh_params_cuda[(x % n) * 4 + 3];
+		}
+
+		__syncthreads();
+
+		// Assign ct, st, ca, sa
+		if(x < n) {
+			ct[x] = cos(theta_i[x]);
+		}
+		if(x >= n && x < 2 * n) {
+			st[x % n] = sin(theta_i[x % n]);
+		}
+		if(x >= 2 * n && x < 3 * n) {
+			ca[x % n] = cos(alpha_i[x % n]);
+		}
+		if(x >= 3 * n && x < 4 * n) {
+			sa[x % n] = sin(alpha_i[x % n]);
+		}
+
+		__syncthreads();
+
+		// Assign matrix Ti
+		if(x < n) {
+			Ti[x * 16 + 0] = ct[x]; 			Ti[x * 16 + 1] = -st[x] * ca[x];				Ti[x * 16 + 2] = st[x] * sa[x];					Ti[x * 16 + 3] = a_i[x] * ct[x];
+		}
+		if(x >= n && x < 2 * n) {
+			Ti[(x % n) * 16 + 4] = st[x % n];	Ti[(x % n) * 16 + 5] = ct[x % n] * ca[x % n];	Ti[(x % n) * 16 + 6] = -ct[x % n] * sa[x % n];	Ti[(x % n) * 16 + 7] = a_i[x % n] * st[x % n];
+		}
+		if(x >= 2 * n && x < 3 * n) {
+			Ti[(x % n) * 16 + 8] = 0;			Ti[(x % n) * 16 + 9] = sa[x % n];				Ti[(x % n) * 16 + 10] = ca[x % n];				Ti[(x % n) * 16 + 11] = d_i[x % n];
+		}
+		if(x >= 3 * n && x < 4 * n) {
+			Ti[(x % n) * 16 + 12] = 0;			Ti[(x % n) * 16 + 13] = 0;						Ti[(x % n) * 16 + 14] = 0;						Ti[(x % n) * 16 + 15] = 1;
+		}
+
+		__syncthreads();
+
+		// Matrix multiplication T = T * Ti[i]
+		for(int j = 0; j < n; j++) {
+			if(x < 16) { // 1 thread per 1 value in 4 x 4 matrix
+				res[x] = 0;
+
+				for(int a = 0; a < 4; a++) {
+					res[x] += T_cuda[(x / 4) * 4 + a] * Ti[j * 16 + x % 4 + a * 4];
+				}
+
+				// Copy matrix res to T
+				T_cuda[x] = res[x];
+			}
+
+			__syncthreads();
+		}
+
+		// Jacobian calculations
+
+		// Initialise pe
+		if(x >= 300 && x < 303) {
+			pe[x - 300] = T_cuda[(x - 300) * 4 + 3];
+		}
+
+		// Matrix multiplication Ti1 = Ti1 * Ti
+		for(int j = 1; j < n; j++) {
+			if(x < 16) {
+				res[x] = 0;
+
+				for(int a = 0; a < 4; a++) {
+					res[x] += Ti1[(j - 1) * 16 + (x / 4) * 4 + a] * Ti[(j - 1) * 16 + (x % 4) + a * 4];
+				}
+
+				// Copy res to Ti1
+				Ti1[j * 16 + x] = res[x];
+			}
+
+			__syncthreads();
+		}
+
+		// Assign zi1
+		if(x >= 3 && x < 3 * n) {
+			zi1[x] = Ti1[(x / 3) * 16 + (x % 3) * 4 + 2];
+		}
+
+		// Assign pi1
+		if(x >= 3 + 3 * n && x < 6 * n) {
+			pi1[x - 3 * n] = Ti1[((x - 3 * n) / 3) * 16 + (x % 3) * 4 + 3];
+		}
+
+		__syncthreads();
+
+		// Assign p, Jp, and Jw based on joint types
+		if(x < 3 * n) {
+			if(jType_cuda[x / 3] == 1) { // Prismatic
+				Jp[x] = zi1[x];
+				Jw[x] = 0;
+			}
+			else { // Revolute
+				p_fk[x] = pe[x % 3] - pi1[x];
+				Jw[x] = zi1[x];
+
+				// Cross product
+				if(x % 3 == 0) {
+					Jp[x] = zi1[x + 1] * p_fk[x + 2] - zi1[x + 2] * p_fk[x + 1];
+				}
+				if(x % 3 == 1) {
+					Jp[x] = zi1[x + 1] * p_fk[x - 1] - zi1[x - 1] * p_fk[x + 1];
+				}
+				if(x % 3 == 2) {
+					Jp[x] = zi1[x - 2] * p_fk[x - 1] - zi1[x - 1] * p_fk[x - 2];
+				}
+			}
+		}
+
+		__syncthreads();
+
+		// Assign J
+		if(x < 3 * n) { // top 3 rows
+			J_cuda[x] = Jp[(x % n) * 3 + (x / n)];
+		}
+		if(x >= 3 * n && x < 6 * n) { // bottom 3 rows
+			J_cuda[x] = Jw[(x % n) * 3 + ((x - 3 * n) / n)];
+		}
+
+		// ----- End of forward kinematics -----
+
 
 		__syncthreads();
 
@@ -981,63 +978,63 @@ inverseKinematics(const int n, const int method, const int dim, float *pdes_inpu
 			R[x - 400] = T_cuda[(x - 400) + (x - 400) / 3];
 		}
 		if(x == 409) {
-			sum = 0;
+			sum[0] = 0;
 		}
 		if(x >= 410 && x < 412) {
-			p[x - 410] = T_cuda[(x - 410) * 4 + 3];
+			p_ik[x - 410] = T_cuda[(x - 410) * 4 + 3];
 		}
 
 		__syncthreads();
 
 		if(x == 0) {
-			phi = atan2(R[3], R[0]);
+			phi[0] = atan2(R[3], R[0]);
 		}
 		if(x >= 412 && x < 414) {
-			delta_p[x - 412] = pdes_cuda[x - 412] - p[x - 412];
+			delta_p[x - 412] = pdes_cuda[x - 412] - p_ik[x - 412];
 		}
 
 		__syncthreads();
 
 		if(dim == 2) {
 			if(x == 1) {
-				ori[0] = phi;
+				ori[0] = phi[0];
 				delta_p[2] = odes_cuda[0] - ori[0];
 
 				// Calculate normal of vector delta_p
 				for(int a = 0; a < 3; a++) {
-					sum += pow(delta_p[a], 2);
+					sum[0] += pow(delta_p[a], 2);
 				}
 
-				normal = sqrt(sum);
+				normal[0] = sqrt(sum[0]);
 			}
 		}
 		else { // dim == 3
 			if(x == 1) {
-				p[2] = T_cuda[11];
+				p_ik[2] = T_cuda[11];
 			}
 			if(x == 2) {
-				theta = atan2(-R[6], sqrt(pow(R[7], 2) + pow(R[8], 2)));
+				theta[0] = atan2(-R[6], sqrt(pow(R[7], 2) + pow(R[8], 2)));
 			}
 			if(x == 3) {
-				psi = atan2(R[7], R[8]);
+				psi[0] = atan2(R[7], R[8]);
 			}
 
 			__syncthreads();
 
 			if(x == 0) {
-				ori[x] = psi;
+				ori[x] = psi[0];
 				delta_p[3] = odes_cuda[x] - ori[x];
 			}
 			if(x == 1) {
-				ori[x] = theta;
+				ori[x] = theta[0];
 				delta_p[4] = odes_cuda[x] - ori[x];
 			}
 			if(x == 2) {
-				ori[x] = phi;
+				ori[x] = phi[0];
 				delta_p[5] = odes_cuda[x] - ori[x];
 			}
 			if(x == 3) {
-				delta_p[2] = pdes_cuda[2] - p[2];
+				delta_p[2] = pdes_cuda[2] - p_ik[2];
 			}
 
 			__syncthreads();
@@ -1045,31 +1042,31 @@ inverseKinematics(const int n, const int method, const int dim, float *pdes_inpu
 			// Calculate normal of vector delta_p
 			if(x == 0) {
 				for(int a = 0; a < 6; a++) {
-					sum += pow(delta_p[a], 2);
+					sum[0] += pow(delta_p[a], 2);
 				}
 
-				normal = sqrt(sum);
+				normal[0] = sqrt(sum[0]);
 			}
 
 		}
 
 		__syncthreads();
 
-		if(normal < TOLERANCE) {
+		if(normal[0] < TOLERANCE) {
 			flag = 1;
 		}
 		else {
 			if(dim == 2) {
-				if(x < 2 * n) {
+				if(x < 2 * n) { // for first two rows
 					// Copy Jacobian from J
 					Jacobian[x] = J_cuda[x];
 
 					// Transpose of Jacobian
-					Jacobian_T[(x % 6) * 3 + (x / 6)] = Jacobian[x];
+					Jacobian_T[(x % n) * 3 + (x / n)] = Jacobian[x];
 				}
 				if(x >= 2 * n && x < 3 * n) {
 					Jacobian[x] = J_cuda[x + 3 * n];
-					Jacobian_T[(x % 6) * 3 + (x / 6)] = Jacobian[x];
+					Jacobian_T[(x % n) * 3 + (x / n)] = Jacobian[x];
 				}
 			}
 			else { // dim == 3
@@ -1079,7 +1076,7 @@ inverseKinematics(const int n, const int method, const int dim, float *pdes_inpu
 					Jacobian[x] = J_cuda[x];
 
 					// Transpose of Jacobian
-					Jacobian_T[(x % 6) * 6 + (x / 6)] = Jacobian[x];
+					Jacobian_T[(x % n) * 6 + (x / n)] = Jacobian[x];
 				}
 			}
 
@@ -1136,6 +1133,8 @@ inverseKinematics(const int n, const int method, const int dim, float *pdes_inpu
 
 	// End timing here
 	clock_t stop_time_second = clock64();
+
+	// Copy times
 	runtime_first[x] = (int) (stop_time_first - start_time_first);
 	runtime_second[x] = (int) (stop_time_second - start_time_second);
 }
@@ -1625,6 +1624,9 @@ void analyseResults(float s_time_fk, float s_time_ik, float p_time_fk, float p_t
 	printf("\nTotal time taken copying: %.5fms", max_f_fk + max_s_fk);
 	printf("\n");
 
+	// For testing:
+	//printf("\n\n\n%.6f\n%.6f", max_f_fk, max_s_fk);
+
 	// Results for IK
 	printf("\n\n  -------  Results for inverse kinematics  -------  ");
 
@@ -1731,6 +1733,7 @@ void analyseResults(float s_time_fk, float s_time_ik, float p_time_fk, float p_t
 	printf("\nMin: %.6fms Max: %.6fms Average: %.6fms", min_s_ik, max_s_ik, average_s_ik);
 	printf("\nTotal time taken copying: %.5fms", max_f_ik + max_s_ik);
 	printf("\n");
+
 }
 
 /**
@@ -1788,7 +1791,7 @@ int main() {
 		return EXIT_FAILURE;
 	}
 
-	generateRandomVariables(5);
+	generateRandomVariables(7);
 
 	printVariables();
 
@@ -1974,6 +1977,11 @@ int main() {
 		exit(EXIT_FAILURE);
 	}
 
+	err = cudaMemcpy(device_odes, host_odes, size_des, cudaMemcpyHostToDevice);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to copy ODES (error code %s)\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
 
 	// CUDA configurations
 	//int numblocks = 0;
@@ -2037,7 +2045,8 @@ int main() {
 	cudaEventRecord(start, 0);
 
 	inverseKinematics<<<1, blocks>>>(nb, method, dim, device_pdes, device_odes, device_Q_output,
-			device_runtime_first_ik, device_runtime_second_ik);
+			device_runtime_first_ik, device_runtime_second_ik, device_dh_params, device_q,
+			device_jType);
 	cudaDeviceSynchronize();
 
 	cudaEventRecord(stop, 0);
