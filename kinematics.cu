@@ -623,18 +623,11 @@ void forwardKinematicsBranchSequential() {
 				// Multiply matrix T = T*Ti[i]
 				for(int a = 0; a < 4; a++) {
 					for(int b = 0; b < 4; b++) {
-						res[a][b] = 0;
+						T_branch[i][a][b] = 0;
 
 						for(int c = 0; c < 4; c++) {
-							res[a][b] += T[a][c] * Ti[i][c][b];
+							T_branch[i][a][b] += T[a][c] * Ti[i][c][b];
 						}
-					}
-				}
-
-				// Assign result to T_branch
-				for(int a = 0; a < 4; a++) {
-					for(int b = 0; b < 4; b++) {
-						T_branch[i][a][b] = res[a][b];
 					}
 				}
 
@@ -650,18 +643,11 @@ void forwardKinematicsBranchSequential() {
 			// Multiply matrix T = T(parent)*Ti[i]
 			for(int a = 0; a < 4; a++) {
 				for(int b = 0; b < 4; b++) {
-					res[a][b] = 0;
+					T_branch[i][a][b] = 0;
 
 					for(int c = 0; c < 4; c++) {
-						res[a][b] += T_branch[currentParent][a][c] * Ti[i][c][b];
+						T_branch[i][a][b] += T_branch[currentParent][a][c] * Ti[i][c][b];
 					}
-				}
-			}
-
-			// Assign result to T_branch
-			for(int a = 0; a < 4; a++) {
-				for(int b = 0; b < 4; b++) {
-					T_branch[i][a][b] = res[a][b];
 				}
 			}
 
@@ -684,7 +670,7 @@ void forwardKinematicsBranch(const int n, int *jType_Input, float *q_Input, floa
 	//int z = blockIdx.z * blockDim.z + threadIdx.z;
 
 	// Variables for homogeneous matrix calculations
-	__shared__ float Ti[MAX_BODIES * 16], res[16]; // 4 x 4 = 16
+	__shared__ float Ti[MAX_BODIES * 16]; // 4 x 4 = 16
 	__shared__ float a_i[MAX_BODIES], alpha_i[MAX_BODIES], d_i[MAX_BODIES], theta_i[MAX_BODIES];
 	__shared__ float ct[MAX_BODIES], st[MAX_BODIES], ca[MAX_BODIES], sa[MAX_BODIES];
 
@@ -2145,6 +2131,15 @@ void analyseResults(float s_time_fk, float s_time_ik, float p_time_fk, float p_t
 }
 
 /**
+ * Analyse results for branching
+ */
+void analyseResultsBranch(float s_time_bfk, float s_time_bik, float p_time_bfk, float p_time_bik,
+		float s_t_branch[nb][4][4], float *p_T_branch, int runtime_first_bfk, int runtime_second_bfk,
+		int runtime_first_bik, int runtime_second_bik) {
+
+}
+
+/**
  * To get the clock rate of the device.
  */
 void getClockRate() {
@@ -2212,6 +2207,7 @@ int main() {
 	size_t size_runtime = blocks * sizeof(int);
 	size_t size_des = 3 * sizeof(float);
 	size_t size_q = sizeof(float) * size_t(nb * (MAX_ITERATION + 1));
+	size_t size_branch = sizeof(float) * size_t(nb * 16);
 
 	// For copying purposes
 	int *host_jType = (int *) malloc(size_int);
@@ -2222,22 +2218,32 @@ int main() {
 	// For analysing
 	float analyse_T[4][4];
 	float analyse_J[6][MAX_BODIES];
+	float analyse_T_branch[nb][4][4];
 	int *host_runtime_first_fk = (int *) malloc(size_runtime);
 	int *host_runtime_second_fk = (int *) malloc(size_runtime);
 	int *host_runtime_first_ik = (int *) malloc(size_runtime);
 	int *host_runtime_second_ik = (int *) malloc(size_runtime);
+	int *host_runtime_first_bfk = (int *) malloc(size_runtime);
+	int *host_runtime_second_bfk = (int *) malloc(size_runtime);
+	int *host_runtime_first_bik = (int *) malloc(size_runtime);
+	int *host_runtime_second_bik = (int *) malloc(size_runtime);
+	int *host_parents = (int *) malloc(size_int);
 
 	// For output
 	float *host_T_test = (float *) malloc(size_T);
 	float *host_J_test = (float *) malloc(size_J);
 	float *host_Test_test = (float *) malloc(size_dh);
 	float *host_Q_output = (float *) malloc(size_q);
+	float *host_T_branch = (float *) malloc(size_branch);
 
 	// Check if host variables are successfully allocated
 	if(host_q == NULL || host_jType == NULL || host_T_test == NULL || host_J_test == NULL
 			|| host_runtime_first_fk == NULL || host_runtime_second_fk == NULL || host_Q_output == NULL
 			|| host_pdes == NULL || host_odes == NULL || host_J_test == NULL
-			|| host_runtime_first_ik == NULL || host_runtime_second_ik == NULL) {
+			|| host_runtime_first_ik == NULL || host_runtime_second_ik == NULL
+			|| host_runtime_first_bfk == NULL || host_runtime_second_bik == NULL
+			|| host_runtime_first_bik == NULL || host_runtime_second_bik == NULL
+			|| host_T_branch || host_parents == NULL) {
 		fprintf(stderr, "Failed to allocate host variables\n");
 		exit(EXIT_FAILURE);
 	}
@@ -2246,6 +2252,7 @@ int main() {
 	for(int i = 0; i < nb; i++) {
 		host_jType[i] = jType[i];
 		host_q[i] = q[i];
+		host_parents[i] = parents[i];
 	}
 	for(int i = 0; i < 3; i++) {
 		host_pdes[i] = pdes[i];
@@ -2262,10 +2269,16 @@ int main() {
 	float *device_odes = NULL;
 	float *device_pdes = NULL;
 	float *device_Q_output = NULL;
+	float *device_T_branch = NULL;
 	int *device_runtime_first_fk = NULL;
 	int *device_runtime_second_fk = NULL;
 	int *device_runtime_first_ik = NULL;
 	int *device_runtime_second_ik = NULL;
+	int *device_runtime_first_bfk = NULL;
+	int *device_runtime_second_bfk = NULL;
+	int *device_runtime_first_bik = NULL;
+	int *device_runtime_second_bik = NULL;
+	int *device_parents = NULL;
 
 	// Allocate device variables
 	err = cudaMalloc((void **) &device_jType, size_int);
@@ -2324,6 +2337,20 @@ int main() {
 		exit(EXIT_FAILURE);
 	}
 
+	err = cudaMalloc((void **) &device_runtime_first_bfk, size_runtime);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to allocate device runtime first FK (B) variable (error code %s)\n",
+				cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+	err = cudaMalloc((void **) &device_runtime_second_bfk, size_runtime);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to allocate device runtime second FK (B) variable (error code %s)\n",
+				cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
 	err = cudaMalloc((void **) &device_Q_output, size_q);
 	if(err != cudaSuccess) {
 		fprintf(stderr, "Failed to allocated device Q output (error code %s)\n",
@@ -2355,6 +2382,34 @@ int main() {
 	err = cudaMalloc((void **) &device_runtime_second_ik, size_runtime);
 	if(err != cudaSuccess) {
 		fprintf(stderr, "Failed to allocated device runtime second IK variable (error code %s)\n",
+				cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+	err = cudaMalloc((void **) &device_runtime_first_bik, size_runtime);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to allocated device runtime first IK (B) variable (error code %s)\n",
+				cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+	err = cudaMalloc((void **) &device_runtime_second_bik, size_runtime);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to allocated device runtime second IK (B) variable (error code %s)\n",
+				cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+	err = cudaMalloc((void **) &device_T_branch, size_branch);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to allocated device T branch variable (error code %s)\n",
+				cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+	err = cudaMalloc((void **) &device_parents, size_int);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to allocated device parents variable (error code %s)\n",
 				cudaGetErrorString(err));
 		exit(EXIT_FAILURE);
 	}
@@ -2391,13 +2446,19 @@ int main() {
 		exit(EXIT_FAILURE);
 	}
 
+	err = cudaMemcpy(device_parents, host_parents, size_int, cudaMemcpyHostToDevice);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to copy Parents (error code %s)\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
 	// CUDA configurations
 	//int numblocks = 0;
 	dim3 blocksPerGrid(512, 1, 1);
 	dim3 threadsPerBlock(1024, 1, 1);
 
 	// Code for timing of CUDA kernel function
-	float parallel_time_fk, parallel_time_ik;
+	float parallel_time_fk, parallel_time_ik, parallel_time_bfk, parallel_time_bik;
 	cudaEvent_t start, stop;
 
 	// Run forward kinematics
@@ -2486,6 +2547,42 @@ int main() {
 		exit(EXIT_FAILURE);
 	}
 
+	//Run branching
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+	cudaEventRecord(start, 0);
+
+	forwardKinematicsBranch<<<1, blocks>>>(nb, device_jType, device_q, device_dh_params,
+			device_T_branch, device_runtime_first_bik, device_runtime_second_bik, device_parents);
+	cudaDeviceSynchronize();
+
+	cudaEventRecord(stop, 0);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&parallel_time_bik, start, stop);
+	cudaEventDestroy(start);
+	cudaEventDestroy(stop);
+
+	err = cudaMemcpy(host_T_branch, device_T_branch, size_branch, cudaMemcpyDeviceToHost);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to copy device T branch to host variable (error code %s)\n",
+				cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+	err = cudaMemcpy(host_runtime_first_bik, device_runtime_first_bik, size_runtime, cudaMemcpyDeviceToHost);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to copy output runtime first IK (B) to host variable (error code %s)\n",
+				cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+	err = cudaMemcpy(host_runtime_second_bik, device_runtime_second_bik, size_runtime, cudaMemcpyDeviceToHost);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to copy output runtime second IK (B) to host variable (error code %s)\n",
+				cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
 
 	// free device variables
 	err = cudaFree(device_jType);
@@ -2536,6 +2633,19 @@ int main() {
 		exit(EXIT_FAILURE);
 	}
 
+	err = cudaFree(device_runtime_first_bfk);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to free device runtime first FK (B) (error code %s)\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+	err = cudaFree(device_runtime_second_bfk);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to free device runtime second FK (B) (error code %s)\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+
 	err = cudaFree(device_Q_output);
 	if(err != cudaSuccess) {
 		fprintf(stderr, "Failed to free device Q output (error code %s)\n", cudaGetErrorString(err));
@@ -2566,9 +2676,27 @@ int main() {
 		exit(EXIT_FAILURE);
 	}
 
+	err = cudaFree(device_runtime_first_bik);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to free device runtime first IK (B) (error code %s)\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+	err = cudaFree(device_runtime_second_bik);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to free device runtime second IK (B) (error code %s)\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
+	err = cudaFree(device_T_branch);
+	if(err != cudaSuccess) {
+		fprintf(stderr, "Failed to free device T branch (error code %s)\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	}
+
 
 	// Code for timing sequential algorithm
-	float sequential_time_fk, sequential_time_ik;
+	float sequential_time_fk, sequential_time_ik, sequential_time_bfk, sequential_time_bik;
 
 	cudaEventCreate(&start);
 	cudaEventCreate(&stop);
@@ -2613,10 +2741,37 @@ int main() {
 	cudaEventDestroy(start);
 	cudaEventDestroy(stop);
 
+
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+	cudaEventRecord(start, 0);
+
+	// Run forward kinematics branching
+	forwardKinematicsBranchSequential();
+
+	//End of timing for sequential algorithm
+	cudaEventRecord(stop, 0);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&sequential_time_bik, start, stop);
+	cudaEventDestroy(start);
+	cudaEventDestroy(stop);
+
+	// Copy T branch
+	for(int i = 0; i < nb; i++) {
+		for(int j = 0; j < 4; j++) {
+			for(int m = 0; m < 4; m++) {
+				analyse_T_branch[i][j][m] = T_branch[i][j][m];
+			}
+		}
+	}
+
 	analyseResults(sequential_time_fk, sequential_time_ik, parallel_time_fk, parallel_time_ik,
 			analyse_T, analyse_J, host_T_test, host_J_test, host_runtime_first_fk, host_runtime_second_fk,
 			host_Q_output, host_runtime_first_ik, host_runtime_second_ik, 1e-2, blocks);
 
+	analyseResultsBranch(sequential_time_bfk, sequential_time_bik, parallel_time_bfk, parallel_time_bik,
+			analyse_T_branch, host_T_branch, host_runtime_first_bfk, host_runtime_second_bfk,
+			host_runtime_first_bfk, host_runtime_second_bik);
 
 	// Free host variables
 	free(host_jType);
@@ -2625,12 +2780,17 @@ int main() {
 	free(host_J_test);
 	free(host_runtime_first_fk);
 	free(host_runtime_second_fk);
+	free(host_runtime_first_bfk);
+	free(host_runtime_second_bfk);
 	free(host_pdes);
 	free(host_odes);
 	free(host_Q_output);
 	free(host_Test_test);
 	free(host_runtime_first_ik);
 	free(host_runtime_second_ik);
+	free(host_runtime_first_bik);
+	free(host_runtime_second_bik);
+	free(host_T_branch);
 
 	/*
 	// ------------------------- Start Code for testing -------------------------
