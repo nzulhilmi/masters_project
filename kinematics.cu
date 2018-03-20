@@ -79,9 +79,12 @@ int nb = 0; // Number of bodies
 int jType[MAX_BODIES]; // Joint types
 float q[MAX_BODIES]; // Vector of joint variables
 float DH_params[MAX_BODIES][4]; // Denavit-Hartenberg Parameters
+int parents[MAX_BODIES]; // To store the parents of each link
 
 float T[4][4];
 float J[6][MAX_BODIES];
+float T_branch[MAX_BODIES][4][4];
+int end_effectors[MAX_BODIES];
 
 // Variable specific for inverse kinematics
 float pdes[3];
@@ -132,8 +135,8 @@ testing(int *x_input) {
 /**
  * Forward Kinematics implemented in parallel using CUDA GPU threads
  */
-__global__ void
-forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_params_input,
+__global__
+void forwardKinematics(const int n, int *jType_Input, float *q_Input, float *dh_params_input,
 		float *t_output, float *j_output, int *runtime_first, int *runtime_second) {
 
 	int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -532,6 +535,156 @@ void forwardKinematicsSequential() {
 }
 
 /**
+ * Forward Kinematics for robots with branches in their arms/manipulators.
+ * Implemented sequentially.
+ * This will only consider homogeneous matrix calculation, no Jacobian calculations.
+ */
+void forwardKinematicsBranchSequential() {
+	// Array to store values 1 or 0, to indicate which link is calculated
+	int calculated[nb]; // or visited
+	int not_end_effectors[nb];
+
+	int numberOfEndEffectors = 0;
+
+	// Initialise T to zeros
+	for(int a = 0; a < 4; a++) {
+		for(int b = 0; b < 4; b++) {
+			T[a][b] = 0;
+		}
+	}
+	// Assign diagonal of T = 1
+	T[0][0] = 1; T[1][1] = 1; T[2][2] = 1; T[3][3] = 1;
+
+	float Ti[nb][4][4];
+	float res[4][4]; // To be used for matrix calculations
+
+	int i;
+	for(i = 0; i < 6; i++) {
+		for(int j = 0; j < nb; j++) {
+			J[i][j] = 0;
+		}
+	}
+
+	// Set DH params according to joint types
+	for(i = 0; i < nb; i++) {
+		if(jType[i] == 1) { // Prismatic
+			DH_params[i][2] = q[i];
+		}
+		else { // Revolute
+			DH_params[i][3] = q[i];
+		}
+
+		// Initialise calculated to 0
+		calculated[i] = 0;
+		not_end_effectors[i] = 0;
+	}
+
+	// Computing homogeneous matrix
+	for(i = 0; i < nb; i++) {
+		float a_i = DH_params[i][0];
+		float alpha_i = DH_params[i][1];
+		float d_i = DH_params[i][2];
+		float theta_i = DH_params[i][3];
+
+		float ct = cos(theta_i);
+		float st = sin(theta_i);
+		float ca = cos(alpha_i);
+		float sa = sin(alpha_i);
+
+		Ti[i][0][0] = ct; Ti[i][0][1] = -st*ca; Ti[i][0][2] = st*sa;  Ti[i][0][3] = a_i*ct;
+		Ti[i][1][0] = st; Ti[i][1][1] = ct*ca;  Ti[i][1][2] = -ct*sa; Ti[i][1][3] = a_i*st;
+		Ti[i][2][0] = 0;  Ti[i][2][1] = sa;     Ti[i][2][2] = ca;     Ti[i][2][3] = d_i;
+		Ti[i][3][0] = 0;  Ti[i][3][1] = 0;      Ti[i][3][2] = 0;      Ti[i][3][3] = 1;
+	}
+
+	// Find all the end-effectors
+	for(i = 0; i < nb; i++) {
+		not_end_effectors[parents[i]] = 1;
+	}
+
+	// Assign all the end-effectors
+	for(i = 0; i < nb; i++) {
+		if(not_end_effectors[i] == 0) {
+			end_effectors[numberOfEndEffectors] = i; // Store the index of the end-effectors
+			numberOfEndEffectors++;
+		}
+	}
+
+	// Find the homogeneous matrix from base to end-effectors
+	for(i = 0; i < nb; i++) {
+
+		// Check if there's no parent
+		if(parents[i] < 0) { // no parent
+
+			// Check if it has been calculated before
+			if(calculated[i] == 0) { // Not yet calculated
+
+				// Calculate the homogeneous matrix of its own
+				// Multiply matrix T = T*Ti[i]
+				for(int a = 0; a < 4; a++) {
+					for(int b = 0; b < 4; b++) {
+						res[a][b] = 0;
+
+						for(int c = 0; c < 4; c++) {
+							res[a][b] += T[a][c] * Ti[i][c][b];
+						}
+					}
+				}
+
+				// Assign result to T_branch
+				for(int a = 0; a < 4; a++) {
+					for(int b = 0; b < 4; b++) {
+						T_branch[i][a][b] = res[a][b];
+					}
+				}
+
+				// Mark as calculated
+				calculated[i] = 1;
+			}
+		}
+		else { // has parent
+			// Find parent
+			int currentParent = parents[i];
+
+			// Proceed with current homogeneous matrix
+			// Multiply matrix T = T(parent)*Ti[i]
+			for(int a = 0; a < 4; a++) {
+				for(int b = 0; b < 4; b++) {
+					res[a][b] = 0;
+
+					for(int c = 0; c < 4; c++) {
+						res[a][b] += T_branch[currentParent][a][c] * Ti[i][c][b];
+					}
+				}
+			}
+
+			// Assign result to T_branch
+			for(int a = 0; a < 4; a++) {
+				for(int b = 0; b < 4; b++) {
+					T_branch[i][a][b] = res[a][b];
+				}
+			}
+
+			calculated[i] = 1;
+		}
+	}
+}
+
+/**
+ * Forward Kinematics for robots with branches in their arms/manipulators.
+ * Implemented in parallel.
+ * This will only consider homogeneous matrix calculation, no Jacobian calculations.
+ */
+__global__
+void forwardKinematicsBranch() {
+	int x = blockIdx.x * blockDim.x + threadIdx.x;
+	//int y = blockIdx.y * blockDim.y + threadIdx.y;
+	//int z = blockIdx.z * blockDim.z + threadIdx.z;
+
+
+}
+
+/**
  * Find the determinant of a 3x3 or 6x6 matrix.
  * Helper function for the calculation of inverse matrix.
  */
@@ -575,7 +728,7 @@ float determinant(float a[6][6], float k) {
 }
 
 /**
- * Find the transpose of a matrix, to find inverse.
+ * Find the transpose of a matrix.
  * Helper function for the calculation of inverse matrix.
  */
 void transpose(float num[6][6], float fac[6][6], float r, float res[6][6]) {
@@ -598,7 +751,7 @@ void transpose(float num[6][6], float fac[6][6], float r, float res[6][6]) {
 }
 
 /**
- * Find the cofactor of a 3x3 or 6x6 matrix
+ * Find the cofactor of a 3x3 or 6x6 matrix.
  * Helper function for the calculation of inverse matrix.
  */
 void cofactor(float num[6][6], float f, float res[6][6]) {
@@ -634,7 +787,7 @@ void cofactor(float num[6][6], float f, float res[6][6]) {
 }
 
 /**
- * Test method for inverse matrix
+ * Test method for inverse matrix.
  */
 void testMatrix() {
 	printf("\n\nTesting matrix\n");
@@ -678,7 +831,7 @@ void testMatrix() {
 }
 
 /**
- * Inverse Kinematics implemented in parallel using CUDA GPU threads
+ * Inverse Kinematics implemented in parallel using CUDA GPU threads.
  */
 __global__ void
 inverseKinematics(const int n, const int method, const int dim, float *pdes_input,
@@ -1140,7 +1293,7 @@ inverseKinematics(const int n, const int method, const int dim, float *pdes_inpu
 }
 
 /**
- * Inverse Kinematics
+ * Inverse Kinematics implemented sequentually.
  */
 void inverseKinematicsSequential() {
 	int flag = 0;
@@ -1295,7 +1448,7 @@ void inverseKinematicsSequential() {
 
 /**
  * Reads input from a text file. Input is a model of a robot's arm/manipulator.
- * This functions convert the input into global variables.
+ * This functions convert the input and copy to global variables.
  */
 int readInput() {
 	static const char filename[] = "/home/nik/cuda-workspace/Kinematics/src/modelInput1.txt";
@@ -1388,7 +1541,7 @@ int readInput() {
 }
 
 /**
- * Generate random input variables
+ * Generate random input variables.
  */
 int generateRandomVariables(int numberOfInputs) {
 	if(numberOfInputs > MAX_BODIES) {
@@ -1419,6 +1572,37 @@ int generateRandomVariables(int numberOfInputs) {
 
 	method = 0;
 	dim = (rand() % (4-2)) + 2;
+
+	return 0;
+}
+
+/**
+ * Generate random variables for DH params for robots with branches
+ */
+int generateParents() {
+
+	parents[0] = -1; // negative value to indicate no parents
+	parents[1] = 0;
+	parents[2] = 1;
+	parents[3] = 2;
+	parents[4] = 2;
+	parents[5] = 4;
+	parents[6] = 1;
+	parents[7] = 6;
+	parents[8] = 7;
+	parents[9] = 7;
+	parents[10] = 9;
+	parents[11] = 0;
+	parents[12] = 11;
+	parents[13] = 12;
+	parents[14] = 13;
+	parents[15] = 13;
+	parents[16] = 15;
+	parents[17] = 12;
+	parents[18] = 17;
+	parents[19] = 18;
+	parents[20] = 18;
+	parents[21] = 20;
 
 	return 0;
 }
@@ -1737,7 +1921,7 @@ void analyseResults(float s_time_fk, float s_time_ik, float p_time_fk, float p_t
 }
 
 /**
- * To get the clock rate of the device
+ * To get the clock rate of the device.
  */
 void getClockRate() {
 	cudaDeviceProp prop;
@@ -1791,7 +1975,7 @@ int main() {
 		return EXIT_FAILURE;
 	}
 
-	generateRandomVariables(7);
+	generateRandomVariables(22);
 
 	printVariables();
 
