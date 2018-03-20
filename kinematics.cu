@@ -676,12 +676,236 @@ void forwardKinematicsBranchSequential() {
  * This will only consider homogeneous matrix calculation, no Jacobian calculations.
  */
 __global__
-void forwardKinematicsBranch() {
+void forwardKinematicsBranch(const int n, int *jType_Input, float *q_Input, float *dh_params_input,
+		float *t_branch_output, int *runtime_first, int *runtime_second, int *parents_input) {
+
 	int x = blockIdx.x * blockDim.x + threadIdx.x;
 	//int y = blockIdx.y * blockDim.y + threadIdx.y;
 	//int z = blockIdx.z * blockDim.z + threadIdx.z;
 
+	// Variables for homogeneous matrix calculations
+	__shared__ float Ti[MAX_BODIES * 16], res[16]; // 4 x 4 = 16
+	__shared__ float a_i[MAX_BODIES], alpha_i[MAX_BODIES], d_i[MAX_BODIES], theta_i[MAX_BODIES];
+	__shared__ float ct[MAX_BODIES], st[MAX_BODIES], ca[MAX_BODIES], sa[MAX_BODIES];
 
+	__shared__ float T_cuda[16], T_branch_cuda[16 * MAX_BODIES];
+	__shared__ float jType_cuda[MAX_BODIES], q_cuda[MAX_BODIES], dh_params_cuda[4 * MAX_BODIES];
+	__shared__ int parents[MAX_BODIES], calculated[MAX_BODIES], child[MAX_BODIES  * MAX_BODIES];
+	__shared__ int turn[MAX_BODIES];
+
+	// To initialise all variables to zero
+	if(x >= 200 && x < 216) { // size 16
+		T_cuda[x - 200] = 0;
+	}
+
+	// Start timing here
+	clock_t start_time_first = clock64();
+
+	// Copy variables for joint Type and Q
+	if(x < n) {
+		jType_cuda[x] = jType_Input[x];
+	}
+	if(x >= n && x < 2 * n) {
+		q_cuda[x - n] = q_Input[x - n];
+	}
+
+	// Copy dh params
+	if(x >= 2 * n && x < n * 6) {
+		dh_params_cuda[x - 2 * n] = dh_params_input[x - 2 * n];
+	}
+
+	// Copy parents details
+	if(x >= 6 * n && x < 7 * n) {
+		parents[x - 6 * n] = parents_input[x - 6 * n];
+	}
+
+	// end timing here
+	clock_t stop_time_first = clock64();
+
+	__syncthreads();
+
+	// Assign all childs == -1
+	if(x < n * n - 1) {
+		child[x] = -1;
+	}
+
+	// Assign T diagonal
+	if(x == 500) {
+		T_cuda[0] = 1;
+		T_cuda[5] = 1;
+		T_cuda[10] = 1;
+		T_cuda[15] = 1;
+	}
+
+	__syncthreads();
+
+	// Assign DH params for prismatic and revolute joints
+	if(x < n) {
+		if(jType_cuda[x] == 1) { // Prismatic
+			dh_params_cuda[x * 4 + 2] = q_cuda[x];
+		}
+		else { // Resolute
+			dh_params_cuda[x * 4 + 3] = q_cuda[x];
+		}
+	}
+
+	// Find all the childs
+	if(x >= n && x < 2 * n) {
+		//child[(x - n) * n] = -1;
+
+		for(int a = 0; a < n; a++) {
+			int numberOfChilds = 0;
+
+			if(parents[a] == (x - n)) {
+				child[(x - n) * n + numberOfChilds] = a;
+
+				numberOfChilds++;
+			}
+		}
+	}
+
+	// Assign turns to 0
+	if(x >= 2 * n && x < 3 * n) {
+		turn[x - 2 * n] = 0;
+	}
+
+	__syncthreads();
+
+	// Assign a_i, alpha_i, d_i, theta_i
+	if(x < n) {
+		a_i[x] = dh_params_cuda[x * 4];
+	}
+	if(x >= n && x < 2 * n) {
+		alpha_i[x % n] = dh_params_cuda[(x % n) * 4 + 1];
+	}
+	if(x >= 2 * n && x < 3 * n) {
+		d_i[x % n] = dh_params_cuda[(x % n) * 4 + 2];
+	}
+	if(x >= 3 * n && x < 4 * n) {
+		theta_i[x % n] = dh_params_cuda[(x % n) * 4 + 3];
+	}
+
+	//Assign turn(s) for first iteration of while loop
+	if(x >= 4 * n && x < 5 * n) {
+		if(parents[x - 4 * n] < 0) {
+			turn[x - 4 * n] = 1;
+		}
+	}
+
+	__syncthreads();
+
+	// Assign ct, st, ca, sa
+	if(x < n) {
+		ct[x] = cos(theta_i[x]);
+	}
+	if(x >= n && x < 2 * n) {
+		st[x % n] = sin(theta_i[x % n]);
+	}
+	if(x >= 2 * n && x < 3 * n) {
+		ca[x % n] = cos(alpha_i[x % n]);
+	}
+	if(x >= 3 * n && x < 4 * n) {
+		sa[x % n] = sin(alpha_i[x % n]);
+	}
+
+	// Mark all calculated as 0
+	if(x >= 4 * n && x < 5 * n) {
+		calculated[x - 4 * n] = 0;
+	}
+
+	__syncthreads();
+
+	// Assign matrix Ti
+	if(x < n) {
+		Ti[x * 16 + 0] = ct[x]; 			Ti[x * 16 + 1] = -st[x] * ca[x];				Ti[x * 16 + 2] = st[x] * sa[x];					Ti[x * 16 + 3] = a_i[x] * ct[x];
+	}
+	if(x >= n && x < 2 * n) {
+		Ti[(x % n) * 16 + 4] = st[x % n];	Ti[(x % n) * 16 + 5] = ct[x % n] * ca[x % n];	Ti[(x % n) * 16 + 6] = -ct[x % n] * sa[x % n];	Ti[(x % n) * 16 + 7] = a_i[x % n] * st[x % n];
+	}
+	if(x >= 2 * n && x < 3 * n) {
+		Ti[(x % n) * 16 + 8] = 0;			Ti[(x % n) * 16 + 9] = sa[x % n];				Ti[(x % n) * 16 + 10] = ca[x % n];				Ti[(x % n) * 16 + 11] = d_i[x % n];
+	}
+	if(x >= 3 * n && x < 4 * n) {
+		Ti[(x % n) * 16 + 12] = 0;			Ti[(x % n) * 16 + 13] = 0;						Ti[(x % n) * 16 + 14] = 0;						Ti[(x % n) * 16 + 15] = 1;
+	}
+
+	__syncthreads();
+
+	// Loop to fine the homogeneous matrix from base to end-effectors
+	int link = 0;
+	while(link < n) {
+		if(turn[x] == 1 && x < n) {
+
+			// Check if it has parents
+			if(parents[x] < 0) { // no parents
+				// Calculate the homogeneous matrix of its own
+				// Multiply matrix T = T*Ti[i]
+				for(int a = 0; a < 4; a++) {
+					for(int b = 0; b < 4; b++) {
+						T_branch_cuda[x * n + a * 4 + b] = 0;
+
+						for(int c = 0; c < 4; c++) {
+							T_branch_cuda[x * n + a * 4 + b] += T_cuda[a * 4 + c] * Ti[x * n + c * 4 + b];
+						}
+					}
+				}
+			}
+			else { // has parents
+				// Find parent
+				int currentParent = parents[x];
+
+				// Proceed with homogeneous matrix
+				// Multiply matrix T = T[parent] * Ti[i]
+				for(int a = 0; a < 4; a++) {
+					for(int b = 0; b < 4; b++) {
+						T_branch_cuda[x * n + a * 4 + b] = 0;
+
+						for(int c = 0; c < 4; c++) {
+							T_branch_cuda[x * n + a * 4 + b] +=
+									T_branch_cuda[currentParent * n + a * 4 + c] * Ti[x * n + c * 4 + b];
+						}
+					}
+				}
+			}
+
+			// Assign turn off
+			turn[x] = 0;
+
+			// Assign child to turn on
+			// Check if link has a child
+			if(child[x * n] >= 0) { // has child
+				int child_index = 0;
+
+				while(child[x * n + child_index] >= 0) {
+					turn[child[x * n + child_index]] = 1;
+
+					child_index++;
+				}
+			}
+
+			// Mark as calculated
+			calculated[x] = 1;
+		}
+
+		link++;
+
+		__syncthreads();
+	}
+
+	// Start timing here
+	clock_t start_time_second = clock64();
+
+	// Copy T to output
+	__syncthreads();
+	if(x < n * 16) {
+		t_branch_output[x] = T_branch_cuda[x];
+	}
+
+	// End timing here
+	clock_t stop_time_second = clock64();
+
+	runtime_first[x] = (int)(stop_time_first - start_time_first);
+	runtime_second[x] = (int)(stop_time_second - start_time_second);
 }
 
 /**
