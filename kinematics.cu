@@ -78,12 +78,15 @@
 int nb = 0; // Number of bodies
 int jType[MAX_BODIES]; // Joint types
 float q[MAX_BODIES]; // Vector of joint variables
+float q_branch[MAX_BODIES];
 float DH_params[MAX_BODIES][4]; // Denavit-Hartenberg Parameters
 int parents[MAX_BODIES]; // To store the parents of each link
 
 float T[4][4];
 float J[6][MAX_BODIES];
 float T_branch[MAX_BODIES][4][4];
+int numberOfEndEffectors = 0;
+int not_end_effectors[MAX_BODIES];
 int end_effectors[MAX_BODIES];
 
 // Variable specific for inverse kinematics
@@ -542,9 +545,6 @@ void forwardKinematicsSequential() {
 void forwardKinematicsBranchSequential() {
 	// Array to store values 1 or 0, to indicate which link is calculated
 	int calculated[nb]; // or visited
-	int not_end_effectors[nb];
-
-	int numberOfEndEffectors = 0;
 
 	// Initialise T to zeros
 	for(int a = 0; a < 4; a++) {
@@ -556,7 +556,7 @@ void forwardKinematicsBranchSequential() {
 	T[0][0] = 1; T[1][1] = 1; T[2][2] = 1; T[3][3] = 1;
 
 	float Ti[nb][4][4];
-	float res[4][4]; // To be used for matrix calculations
+	//float res[4][4]; // To be used for matrix calculations
 
 	int i;
 	for(i = 0; i < 6; i++) {
@@ -568,15 +568,14 @@ void forwardKinematicsBranchSequential() {
 	// Set DH params according to joint types
 	for(i = 0; i < nb; i++) {
 		if(jType[i] == 1) { // Prismatic
-			DH_params[i][2] = q[i];
+			DH_params[i][2] = q_branch[i];
 		}
 		else { // Revolute
-			DH_params[i][3] = q[i];
+			DH_params[i][3] = q_branch[i];
 		}
 
 		// Initialise calculated to 0
 		calculated[i] = 0;
-		not_end_effectors[i] = 0;
 	}
 
 	// Computing homogeneous matrix
@@ -597,24 +596,13 @@ void forwardKinematicsBranchSequential() {
 		Ti[i][3][0] = 0;  Ti[i][3][1] = 0;      Ti[i][3][2] = 0;      Ti[i][3][3] = 1;
 	}
 
-	// Find all the end-effectors
-	for(i = 0; i < nb; i++) {
-		not_end_effectors[parents[i]] = 1;
-	}
-
-	// Assign all the end-effectors
-	for(i = 0; i < nb; i++) {
-		if(not_end_effectors[i] == 0) {
-			end_effectors[numberOfEndEffectors] = i; // Store the index of the end-effectors
-			numberOfEndEffectors++;
-		}
-	}
-
 	// Find the homogeneous matrix from base to end-effectors
 	for(i = 0; i < nb; i++) {
+		//printf("\nLink: %d ", i + 1);
 
 		// Check if there's no parent
 		if(parents[i] < 0) { // no parent
+			//printf("No parent");
 
 			// Check if it has been calculated before
 			if(calculated[i] == 0) { // Not yet calculated
@@ -638,6 +626,7 @@ void forwardKinematicsBranchSequential() {
 		else { // has parent
 			// Find parent
 			int currentParent = parents[i];
+			//printf("Has parent: %d", currentParent + 1);
 
 			// Proceed with current homogeneous matrix
 			// Multiply matrix T = T(parent)*Ti[i]
@@ -1790,6 +1779,7 @@ int generateRandomVariables(int numberOfInputs) {
  * Generate random variables for DH params for robots with branches
  */
 int generateParents() {
+	// Given length is 22
 
 	parents[0] = -1; // negative value to indicate no parents
 	parents[1] = 0;
@@ -1813,6 +1803,31 @@ int generateParents() {
 	parents[19] = 18;
 	parents[20] = 18;
 	parents[21] = 20;
+
+	// Generate end-effector stuffs
+	int i;
+
+	for(i = 0; i < nb; i++) {
+		not_end_effectors[i] = 0;
+	}
+
+	// Find all the end-effectors
+	for(i = 0; i < nb; i++) {
+		not_end_effectors[parents[i]] = 1;
+	}
+
+	// Assign all the end-effectors
+	for(i = 0; i < nb; i++) {
+		if(not_end_effectors[i] == 0) {
+			end_effectors[numberOfEndEffectors] = i; // Store the index of the end-effectors
+			numberOfEndEffectors++;
+		}
+	}
+
+	// Copy Q
+	for(i = 0; i < nb; i++) {
+		q_branch[i] = q[i];
+	}
 
 	return 0;
 }
@@ -1911,7 +1926,7 @@ void analyseResults(float s_time_fk, float s_time_ik, float p_time_fk, float p_t
 
 	// Check if the results are the same
 	if(true_equal_j + true_equal_t < 1) { // Results are the same
-		printf("\n\nConsistent outputs");
+		printf("\n\n - Consistent outputs - ");
 		// Parallel version
 		printf("\nT:\n");
 		for(i = 0; i < 16; i++) {
@@ -2050,7 +2065,7 @@ void analyseResults(float s_time_fk, float s_time_ik, float p_time_fk, float p_t
 
 	// Check if the results are the same
 	if(true_equal_q == 0) {
-		printf("\n\nConsistent outputs");
+		printf("\n\n - Consistent outputs - ");
 		// Parallel version
 		printf("\nQ:\n");
 		for(i = 0; i < nb * (MAX_ITERATION + 1); i++) {
@@ -2126,16 +2141,136 @@ void analyseResults(float s_time_fk, float s_time_ik, float p_time_fk, float p_t
 	printf("\nFor second copying:");
 	printf("\nMin: %.6fms Max: %.6fms Average: %.6fms", min_s_ik, max_s_ik, average_s_ik);
 	printf("\nTotal time taken copying: %.5fms", max_f_ik + max_s_ik);
-	printf("\n");
-
+	//printf("\n");
 }
 
 /**
  * Analyse results for branching
  */
 void analyseResultsBranch(float s_time_bfk, float s_time_bik, float p_time_bfk, float p_time_bik,
-		float s_t_branch[nb][4][4], float *p_T_branch, int runtime_first_bfk, int runtime_second_bfk,
-		int runtime_first_bik, int runtime_second_bik) {
+		float s_t_branch[MAX_BODIES][4][4], float *p_T_branch, int *runtime_first_bfk, int *runtime_second_bfk,
+		int *runtime_first_bik, int *runtime_second_bik, float epsilon, int blocks) {
+	printf("\n\n\n  -------  Results for forward kinematics (branching)  -------  ");
+
+	int i, j, m;
+
+	// Print times
+	printf("\nTimes taken for FK (branch):");
+	printf("\n   Parallel (includes copying variables): %.4fms", p_time_bfk);
+	printf("\n   Sequential: %.4fms", s_time_bfk);
+
+	// Compare times
+	if(s_time_bfk < p_time_bfk) {
+		printf("\nSequential is faster");
+	}
+	else {
+		printf("\nParallel is faster");
+	}
+	printf("\nRatio of parallel to sequential: %.3f", p_time_bfk / s_time_bfk);
+
+	// Compare T branch
+	int true_equal_t_branch = 0;
+	for(i = 0; i < nb; i++) {
+		for(j = 0; j < 4; j++) {
+			for(m = 0; m < 4; m++) {
+				if(fabs(s_t_branch[i][j][m] - p_T_branch[i * nb + j * 4 + m]) > epsilon) {
+					true_equal_t_branch++;
+				}
+			}
+		}
+	}
+
+	// Check if the results are the same
+	if(true_equal_t_branch < 1) { // results are the same
+		printf("\n\n - Consistent outputs - ");
+
+		// Parallel version
+		for(i = 0; i < numberOfEndEffectors; i++) {
+			int ee_index = end_effectors[i];
+
+			printf("\nEnd-effector %d | Link %d:\n", i + 1, end_effectors[i] + 1);
+			for(j = 0; j < 16; j++) {
+				if(j % 4 == 0 && j != 0) {
+					printf("\n");
+				}
+				printf("%.4f ", p_T_branch[ee_index * nb + j]);
+			}
+		}
+	}
+	else {
+		printf("\n\n - Inconsistent outputs - ");
+
+		for(i = 0; i < numberOfEndEffectors; i++) {
+			int ee_index = end_effectors[i];
+
+			printf("\n\nEnd-effector %d | Link %d:", i + 1, end_effectors[i] + 1);
+			printf("\nSequential:");
+			for(j = 0; j < 4; j++) {
+				printf("\n");
+				for(m = 0; m < 4; m++) {
+					printf("%.4f ", s_t_branch[ee_index][j][m]);
+				}
+			}
+
+			printf("\nParallel:\n");
+			for(j = 0; j < 16; j++) {
+				if(j % 4 == 0 && j != 0) {
+					printf("\n");
+				}
+				printf("%.4f ", p_T_branch[ee_index * nb + j]);
+			}
+		}
+	}
+
+	// Array for runtimes
+	float r_f_bfk[blocks];
+	float r_s_bfk[blocks];
+	float max_f_bfk = 0, average_f_bfk = 0, min_f_bfk;
+	float max_s_bfk = 0, average_s_bfk = 0, min_s_bfk;
+
+	// Convert clock cycles to time
+	for(i = 0; i < blocks; i++) {
+		r_f_bfk[i] = runtime_first_bfk[i] / 1340000000.0f * 1000.0;
+		r_s_bfk[i] = runtime_second_bfk[i] / 1340000000.0f * 1000.0;
+	}
+
+	// Find and calculate the max, min, and average
+	for(i = 0; i < blocks; i++) {
+		if(r_f_bfk[i] > max_f_bfk) {
+			max_f_bfk = r_f_bfk[i];
+		}
+		if(r_s_bfk[i] > max_s_bfk) {
+			max_s_bfk = r_s_bfk[i];
+		}
+		average_f_bfk += r_f_bfk[i];
+		average_s_bfk += r_s_bfk[i];
+	}
+
+	min_f_bfk = max_f_bfk;
+	min_s_bfk = max_s_bfk;
+	average_f_bfk = average_f_bfk / blocks;
+	average_s_bfk = average_s_bfk / blocks;
+
+	for(i = 0; i < blocks; i++) {
+		if(r_f_bfk[i] < min_f_bfk) {
+			min_f_bfk = r_f_bfk[i];
+		}
+		if(r_s_bfk[i] < min_s_bfk) {
+			min_s_bfk = r_s_bfk[i];
+		}
+	}
+
+	// Print runtimes
+	printf("\n\nRuntimes:");
+	printf("\nFor first copying:");
+	printf("\nMin: %.6fms Max: %.6fms Average: %.6fms", min_f_bfk, max_f_bfk, average_f_bfk);
+	printf("\nFor second copying:");
+	printf("\nMin: %.6fms Max: %.6fms Average: %.6fms", min_s_bfk, max_s_bfk, average_s_bfk);
+	printf("\nTotal time taken copying: %.5fms", max_f_bfk + max_s_bfk);
+	printf("\n");
+
+	// Results for IK
+	printf("\n\n  -------  Results for inverse kinematics (branching)  -------  ");
 
 }
 
@@ -2194,7 +2329,9 @@ int main() {
 		return EXIT_FAILURE;
 	}
 
-	generateRandomVariables(22);
+	//generateRandomVariables(22);
+
+	generateParents();
 
 	printVariables();
 
@@ -2227,7 +2364,7 @@ int main() {
 	int *host_runtime_second_bfk = (int *) malloc(size_runtime);
 	int *host_runtime_first_bik = (int *) malloc(size_runtime);
 	int *host_runtime_second_bik = (int *) malloc(size_runtime);
-	int *host_parents = (int *) malloc(size_int);
+	int *host_parents = (int *) malloc(size_int); //
 
 	// For output
 	float *host_T_test = (float *) malloc(size_T);
@@ -2238,12 +2375,12 @@ int main() {
 
 	// Check if host variables are successfully allocated
 	if(host_q == NULL || host_jType == NULL || host_T_test == NULL || host_J_test == NULL
+			|| host_pdes == NULL || host_odes == NULL
 			|| host_runtime_first_fk == NULL || host_runtime_second_fk == NULL || host_Q_output == NULL
-			|| host_pdes == NULL || host_odes == NULL || host_J_test == NULL
 			|| host_runtime_first_ik == NULL || host_runtime_second_ik == NULL
-			|| host_runtime_first_bfk == NULL || host_runtime_second_bik == NULL
+			|| host_runtime_first_bfk == NULL || host_runtime_second_bfk == NULL
 			|| host_runtime_first_bik == NULL || host_runtime_second_bik == NULL
-			|| host_T_branch || host_parents == NULL) {
+			|| host_T_branch == NULL || host_parents == NULL) {
 		fprintf(stderr, "Failed to allocate host variables\n");
 		exit(EXIT_FAILURE);
 	}
@@ -2553,12 +2690,12 @@ int main() {
 	cudaEventRecord(start, 0);
 
 	forwardKinematicsBranch<<<1, blocks>>>(nb, device_jType, device_q, device_dh_params,
-			device_T_branch, device_runtime_first_bik, device_runtime_second_bik, device_parents);
+			device_T_branch, device_runtime_first_bfk, device_runtime_second_bfk, device_parents);
 	cudaDeviceSynchronize();
 
 	cudaEventRecord(stop, 0);
 	cudaEventSynchronize(stop);
-	cudaEventElapsedTime(&parallel_time_bik, start, stop);
+	cudaEventElapsedTime(&parallel_time_bfk, start, stop);
 	cudaEventDestroy(start);
 	cudaEventDestroy(stop);
 
@@ -2569,14 +2706,14 @@ int main() {
 		exit(EXIT_FAILURE);
 	}
 
-	err = cudaMemcpy(host_runtime_first_bik, device_runtime_first_bik, size_runtime, cudaMemcpyDeviceToHost);
+	err = cudaMemcpy(host_runtime_first_bfk, device_runtime_first_bfk, size_runtime, cudaMemcpyDeviceToHost);
 	if(err != cudaSuccess) {
 		fprintf(stderr, "Failed to copy output runtime first IK (B) to host variable (error code %s)\n",
 				cudaGetErrorString(err));
 		exit(EXIT_FAILURE);
 	}
 
-	err = cudaMemcpy(host_runtime_second_bik, device_runtime_second_bik, size_runtime, cudaMemcpyDeviceToHost);
+	err = cudaMemcpy(host_runtime_second_bfk, device_runtime_second_bfk, size_runtime, cudaMemcpyDeviceToHost);
 	if(err != cudaSuccess) {
 		fprintf(stderr, "Failed to copy output runtime second IK (B) to host variable (error code %s)\n",
 				cudaGetErrorString(err));
@@ -2752,7 +2889,7 @@ int main() {
 	//End of timing for sequential algorithm
 	cudaEventRecord(stop, 0);
 	cudaEventSynchronize(stop);
-	cudaEventElapsedTime(&sequential_time_bik, start, stop);
+	cudaEventElapsedTime(&sequential_time_bfk, start, stop);
 	cudaEventDestroy(start);
 	cudaEventDestroy(stop);
 
@@ -2771,7 +2908,7 @@ int main() {
 
 	analyseResultsBranch(sequential_time_bfk, sequential_time_bik, parallel_time_bfk, parallel_time_bik,
 			analyse_T_branch, host_T_branch, host_runtime_first_bfk, host_runtime_second_bfk,
-			host_runtime_first_bfk, host_runtime_second_bik);
+			host_runtime_first_bfk, host_runtime_second_bik, 1e-2, blocks);
 
 	// Free host variables
 	free(host_jType);
